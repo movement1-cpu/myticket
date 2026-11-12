@@ -61,13 +61,16 @@ npm test
 - Timetable: recurring departures by weekday with start and end dates, plus one-off holiday trips. Fare changes only affect departures nobody has booked yet.
 - Pricing rules: peak and holiday surcharges, child discount, promo codes with usage limits.
 - Trips by day, with crew assignment, status changes and a passenger manifest you can print or download as CSV.
-- Counter sales on the same seat inventory, for cash or a pay-later reservation, with a printable 58 mm receipt. Clerks can also take cash for online reservations.
+- **Station terminal**: clerks sell walk-in tickets on the same live seat inventory as online sales, for cash or a pay-later reservation. A seat sold at the counter shows as booked straight away on the website and on the conductor's phone (the field app refreshes every 15 seconds).
+- **Thermal ticket printing** on 58 mm or 80 mm receipt printers: route, departure, boarding point, bus, each passenger's seat, ID and luggage, totals, QR code and reference. Options (saved per computer): print automatically after each sale, one slip per passenger, and **a luggage tag for every item** ("BAG 1 OF 3"). Reprint any ticket by reference. Set the printer as the computer's default; start Chrome with `--kiosk-printing` to skip the print dialog.
+- **Luggage per passenger**: Yes/No, then how many bags, sacks, containers, boxes, crates and other items (with a description for "other"). Recorded at the counter and online. It appears on the ticket, the manifest (with totals for the luggage hold), the CSV and the field app.
 - Parcel register with status updates and SMS to the receiver.
 - Revenue dashboard, occupancy by route, reviews, a balance (earned, pending, available) and payout requests to the company's bank account.
 
 **Conductors and agents** (`/agent.html`, installable)
 - Scan QR codes with the camera (BarcodeDetector, falling back to jsQR) or type a booking reference. Each ticket boards once; repeat scans show "Already boarded".
 - Offline mode: the trip manifest, including each booking's QR payload, is saved on the phone. Scans are checked locally and queued, then synced on reconnect. Sync is idempotent, keyed on a device-generated ID.
+- Bus view: the seat layout with each seat empty, being paid for, sold, an unpaid reservation, or boarded, plus a luggage count per seat and the total for the hold. Tap a seat for the passenger's details. New sales from the station or online appear within 15 seconds.
 - Trip status (Boarding, Departed, Delayed, Arrived) sends an SMS and WhatsApp message to every booked passenger.
 - Shares the phone's GPS position every minute for live tracking.
 

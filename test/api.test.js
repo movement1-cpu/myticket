@@ -287,3 +287,65 @@ test('operator: finance balance and settlement limits', async () => {
   const csv = await api('GET', `/api/operator/trips/${db.prepare('SELECT trip_id FROM bookings WHERE operator_id = 1 AND status = ? LIMIT 1').get('confirmed').trip_id}/manifest?format=csv`, { token: tokens.clerk });
   assert.match(csv.body, /"Seat","Passenger".*"ID number"/);
 });
+
+test('luggage: counter sale records counts; manifest, CSV, receipt and field app show it', async () => {
+  const t = await firstTrip();
+  const seats = await freeSeats(t.trip_id, 2);
+  const hold = (await api('POST', `/api/trips/${t.trip_id}/holds`, { token: tokens.clerk, body: { seats } })).body;
+  const passengers = pax(seats);
+  passengers[0].luggage = { has: true, bags: 2, sacks: 1, containers: 0, boxes: 1, crates: 0, other: 0 };
+  passengers[1].luggage = { has: false };
+  const r = await api('POST', '/api/counter/bookings', { token: tokens.clerk, body: { legs: [{ trip_id: t.trip_id, hold_token: hold.hold_token, from_stop_id: t.boarding_points[0].stop_id, to_stop_id: t.dropping_points.at(-1).stop_id, passengers }],
+    contact: { name: 'Walk-in', phone: '0955000222' }, payment_method: 'cash' } });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  const ref = r.body.bookings[0].ref;
+
+  const receipt = (await api('GET', `/api/counter/receipt/${ref}`, { token: tokens.clerk })).body;
+  assert.match(receipt.qr_svg, /<svg/, 'thermal ticket gets a QR code');
+  assert.equal(receipt.issuer, 'Chanda Phiri (counter clerk)');
+  const s0 = receipt.seats.find(s => s.seat_no === seats[0]);
+  assert.equal(s0.luggage.text, '2 bags, 1 sack, 1 box');
+  assert.equal(s0.luggage.total, 4);
+  assert.equal(receipt.seats.find(s => s.seat_no === seats[1]).luggage.has, false);
+
+  const man = (await api('GET', `/api/operator/trips/${t.trip_id}/manifest`, { token: tokens.clerk })).body;
+  assert.ok(man.luggage_totals.bags >= 2 && man.luggage_totals.boxes >= 1);
+  const csv = (await api('GET', `/api/operator/trips/${t.trip_id}/manifest?format=csv`, { token: tokens.clerk })).body;
+  assert.match(csv, /"Luggage","Bags","Sacks","Containers","Boxes","Crates","Other","Luggage note"/);
+  assert.match(csv, /"TOTAL"/);
+
+  const field = (await api('GET', `/api/agent/trips/${t.trip_id}/manifest`, { token: tokens.conductor })).body;
+  assert.ok(field.layout.decks.length, 'field app gets the bus layout for the bus view');
+  const onBus = field.seats.find(s => s.seat_no === seats[0]);
+  assert.equal(onBus.channel, 'counter', 'a seat sold at the station shows on the bus straight away');
+  assert.equal(onBus.luggage.total, 4);
+});
+
+test('luggage validation', async () => {
+  const t = await firstTrip();
+  const seats = await freeSeats(t.trip_id, 1);
+  const hold = (await api('POST', `/api/trips/${t.trip_id}/holds`, { token: tokens.clerk, body: { seats } })).body;
+  const sell = luggage => api('POST', '/api/counter/bookings', { token: tokens.clerk, body: { legs: [{ trip_id: t.trip_id, hold_token: hold.hold_token, from_stop_id: t.boarding_points[0].stop_id, to_stop_id: t.dropping_points.at(-1).stop_id,
+    passengers: [{ ...pax(seats)[0], luggage }] }], contact: { name: 'X', phone: '0955000333' }, payment_method: 'cash' } });
+  let r = await sell({ has: true, bags: 0 });
+  assert.equal(r.status, 400); assert.match(r.body.error, /how many bags/);
+  r = await sell({ has: true, other: 1 });
+  assert.equal(r.status, 400); assert.match(r.body.error, /describe the "other"/);
+  r = await sell({ has: true, crates: 99 });
+  assert.equal(r.status, 400);
+  r = await sell({ has: true, other: 1, note: 'Bicycle' });
+  assert.equal(r.status, 201);
+});
+
+test('older databases gain the luggage columns on start-up', async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const file = path.join(tmp, 'old.db');
+  const old = new DatabaseSync(file);
+  old.exec(`CREATE TABLE booking_seats (id INTEGER PRIMARY KEY, booking_id INTEGER, trip_id INTEGER, seat_no TEXT, passenger_name TEXT, id_type TEXT, id_number TEXT, gender TEXT,
+    is_child INTEGER DEFAULT 0, fare REAL, active INTEGER DEFAULT 1, boarded_at TEXT, boarded_by INTEGER)`);
+  old.close();
+  const upgraded = openDb(file);
+  const cols = upgraded.prepare('PRAGMA table_info(booking_seats)').all().map(c => c.name);
+  for (const c of ['lug_bags', 'lug_sacks', 'lug_containers', 'lug_boxes', 'lug_crates', 'lug_other', 'lug_note']) assert.ok(cols.includes(c), c);
+  upgraded.close();
+});

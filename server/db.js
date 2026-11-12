@@ -198,7 +198,9 @@ CREATE TABLE IF NOT EXISTS booking_seats (
   is_child INTEGER NOT NULL DEFAULT 0,
   fare REAL NOT NULL,
   active INTEGER NOT NULL DEFAULT 1,
-  boarded_at TEXT, boarded_by INTEGER REFERENCES users(id)
+  boarded_at TEXT, boarded_by INTEGER REFERENCES users(id),
+  lug_bags INTEGER NOT NULL DEFAULT 0, lug_sacks INTEGER NOT NULL DEFAULT 0, lug_containers INTEGER NOT NULL DEFAULT 0,
+  lug_boxes INTEGER NOT NULL DEFAULT 0, lug_crates INTEGER NOT NULL DEFAULT 0, lug_other INTEGER NOT NULL DEFAULT 0, lug_note TEXT
 );
 -- The hard guarantee against double booking: one active seat per trip.
 CREATE UNIQUE INDEX IF NOT EXISTS ux_active_seat ON booking_seats(trip_id, seat_no) WHERE active = 1;
@@ -308,9 +310,19 @@ export function openDb(file = config.dbFile) {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
   db.exec(SCHEMA);
+  migrate(db);
   const ins = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
   for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) ins.run(k, v);
   return db;
+}
+
+/** Additive migrations for databases created by earlier versions. */
+function migrate(db) {
+  const cols = new Set(db.prepare('PRAGMA table_info(booking_seats)').all().map(c => c.name));
+  for (const c of ['lug_bags', 'lug_sacks', 'lug_containers', 'lug_boxes', 'lug_crates', 'lug_other']) {
+    if (!cols.has(c)) db.exec(`ALTER TABLE booking_seats ADD COLUMN ${c} INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (!cols.has('lug_note')) db.exec('ALTER TABLE booking_seats ADD COLUMN lug_note TEXT');
 }
 
 /** Run fn inside a write transaction. BEGIN IMMEDIATE serialises writers, so check-then-insert is safe. */

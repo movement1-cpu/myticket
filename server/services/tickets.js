@@ -2,6 +2,7 @@ import QRCode from 'qrcode';
 import PDFDocument from 'pdfkit';
 import { sign, safeEqual, localTime, localDate } from '../util.js';
 import { config } from '../config.js';
+import { luggageOf, LUGGAGE_SQL } from './luggage.js';
 
 /** QR payload: MT1|<booking ref>|<signature>. The signature stops forged tickets; the DB stops reuse. */
 export const ticketKey = ref => sign('qr.' + ref).slice(0, 16);
@@ -27,8 +28,10 @@ export function ticketData(db, ref) {
   if (!b) return null;
   const board = new Date(new Date(b.depart_at).getTime() + (b.from_offset + b.delay_min) * 60000);
   const arrive = new Date(new Date(b.depart_at).getTime() + (b.to_offset + b.delay_min) * 60000);
-  const seats = db.prepare('SELECT id, seat_no, passenger_name, id_type, id_number, gender, is_child, fare, boarded_at, active FROM booking_seats WHERE booking_id = ? ORDER BY seat_no').all(b.id);
-  return { ...b, board_at: board.toISOString(), arrive_at: arrive.toISOString(), board_local: `${localDate(board)} ${localTime(board)}`, arrive_local: `${localDate(arrive)} ${localTime(arrive)}`, seats, qr: qrPayload(ref), url: ticketUrl(ref) };
+  const seats = db.prepare(`SELECT id, seat_no, passenger_name, id_type, id_number, gender, is_child, fare, boarded_at, active, ${LUGGAGE_SQL} FROM booking_seats WHERE booking_id = ? ORDER BY seat_no`).all(b.id)
+    .map(s => ({ ...s, luggage: luggageOf(s) }));
+  const issuer = b.channel !== 'web' && b.created_by ? db.prepare('SELECT name FROM users WHERE id = ?').get(b.created_by)?.name : null;
+  return { ...b, board_at: board.toISOString(), arrive_at: arrive.toISOString(), board_local: `${localDate(board)} ${localTime(board)}`, arrive_local: `${localDate(arrive)} ${localTime(arrive)}`, seats, issuer, qr: qrPayload(ref), url: ticketUrl(ref) };
 }
 
 export const qrSvg = ref => QRCode.toString(qrPayload(ref), { type: 'svg', margin: 1, errorCorrectionLevel: 'M' });
@@ -49,7 +52,7 @@ export async function ticketPdf(t) {
   row('Status', t.status.replace('_', ' '));
   row('Boarding', `${t.from_terminal}, ${t.from_city} — ${t.board_local}`);
   row('Arrival (planned)', `${t.to_terminal}, ${t.to_city} — ${t.arrive_local}`);
-  row('Passengers', t.seats.filter(s => s.active).map(s => `Seat ${s.seat_no}: ${s.passenger_name} (${s.id_type} ${s.id_number})`).join('\n'));
+  row('Passengers', t.seats.filter(s => s.active).map(s => `Seat ${s.seat_no}: ${s.passenger_name} (${s.id_type} ${s.id_number})\n   Luggage: ${s.luggage.text}`).join('\n'));
   row('Paid', `${cur}${t.total.toFixed(2)} via ${t.payment_method || '—'}`);
   doc.image(png, doc.page.width - 36 - 130, 90, { width: 130 });
   doc.moveDown(1).fontSize(8).fillColor('#666').text('Show this QR code at the boarding gate. Arrive 30 minutes before departure with the ID listed above. Each code can be scanned once.');

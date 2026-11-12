@@ -1,10 +1,11 @@
 import { $, $$, html, raw, esc, api, auth, toast, modal, busy, formData, fileToUpload, kwacha, kw0, time, day, dayOf, dateTime, today, plusDays, pill, download, openBlob, bars, meter, phoneFmt } from './core.js';
 import { seatPicker } from './seatmap.js';
+import { luggageFields, bindLuggage, readLuggage, KINDS } from './luggage.js';
 
 const SECTIONS = [
   ['dashboard', 'Dashboard', ['operator']],
   ['trips', 'Trips & manifests', ['operator', 'clerk', 'conductor']],
-  ['counter', 'Counter sales', ['operator', 'clerk', 'conductor']],
+  ['counter', 'Station terminal', ['operator', 'clerk', 'conductor']],
   ['parcels', 'Parcels', ['operator', 'clerk']],
   ['fleet', 'Fleet', ['operator']],
   ['staff', 'Drivers & staff', ['operator']],
@@ -78,15 +79,18 @@ async function trips(main, date = today()) {
   });
 }
 async function showManifest(main, id) {
-  const { trip, passengers } = await api(`/operator/trips/${id}/manifest`);
+  const { trip, passengers, luggage_totals } = await api(`/operator/trips/${id}/manifest`);
+  const lugTotal = Object.values(luggage_totals).reduce((a, b) => a + b, 0);
   const box = $('#manifest', main);
   box.innerHTML = html`<div class="card">
     <div class="head"><div><h2>Passenger manifest</h2><span class="muted">${trip.operator_name} · ${trip.route_name} · ${trip.depart_local} · ${trip.plate}</span></div>
       <div class="row no-print"><button class="btn ghost sm" id="csv">Download CSV</button><button class="btn sm" id="print">Print</button></div></div>
     <div class="grid3 small"><div><span class="label">Driver</span><br>${trip.driver_name || '—'} ${trip.licence_no ? `(${trip.licence_no})` : ''}</div><div><span class="label">Conductor</span><br>${trip.conductor_name || '—'}</div><div><span class="label">Passengers</span><br>${passengers.length} (${passengers.filter(p => p.boarded_at).length} boarded)</div></div>
-    <div class="tablewrap"><table><thead><tr><th>Seat</th><th>Passenger</th><th>ID</th><th>Phone</th><th>From → To</th><th>Booking</th><th>Boarded</th></tr></thead><tbody>
+    <div class="notice ok small"><b>Luggage in the hold: ${lugTotal} item${lugTotal === 1 ? '' : 's'}</b> from ${passengers.filter(p => p.luggage.has).length} passenger${passengers.filter(p => p.luggage.has).length === 1 ? '' : 's'} ·
+      ${KINDS.filter(([k]) => luggage_totals[k]).map(([k, l]) => `${luggage_totals[k]} ${l.toLowerCase()}`).join(', ') || 'none'}</div>
+    <div class="tablewrap"><table><thead><tr><th>Seat</th><th>Passenger</th><th>ID</th><th>Phone</th><th>From → To</th><th>Luggage</th><th>Booking</th><th>Boarded</th></tr></thead><tbody>
       ${passengers.map(p => html`<tr><td class="mono">${p.seat_no}</td><td>${p.passenger_name}${p.is_child ? ' (child)' : ''}${p.gender ? ` · ${p.gender}` : ''}</td><td class="mono">${p.id_type} ${p.id_number}</td><td class="num">${phoneFmt(p.contact_phone)}</td>
-        <td class="small">${p.from_city} → ${p.to_city}</td><td class="mono">${p.ref}${p.status === 'reserved' ? raw(' <span class="pill warn">unpaid</span>') : ''}</td><td>${p.boarded_at ? '✓' : ''}</td></tr>`)}
+        <td class="small">${p.from_city} → ${p.to_city}</td><td class="small">${p.luggage.has ? p.luggage.text : '—'}</td><td class="mono">${p.ref}${p.status === 'reserved' ? raw(' <span class="pill warn">unpaid</span>') : ''}</td><td>${p.boarded_at ? '✓' : ''}</td></tr>`)}
     </tbody></table></div></div>`;
   $('#csv', box).addEventListener('click', e => busy(e.target, () => download(`/operator/trips/${id}/manifest?format=csv`, `manifest-${trip.service_date}-${trip.plate.replace(/\s/g, '')}.csv`)));
   $('#print', box).addEventListener('click', () => window.print());
@@ -110,15 +114,47 @@ async function crewDialog(t, done) {
   f.addEventListener('submit', e => { e.preventDefault(); busy(f.querySelector('.btn:not(.ghost)'), async () => { const v = formData(f); await api(`/operator/trips/${t.id}/crew`, { method: 'PUT', body: { driver_id: Number(v.driver_id) || null, conductor_id: Number(v.conductor_id) || null } }); m.close(); toast('Crew saved.'); done(); }); });
 }
 
-/* ---------- counter / walk-in sales ---------- */
+/* ---------- station terminal: counter / walk-in sales on the same live seat inventory ---------- */
+const PRINTER_KEY = 'mt.printer';
+const printer = {
+  get() { try { return { w: '58', auto: true, tags: true, each: false, ...JSON.parse(localStorage.getItem(PRINTER_KEY)) }; } catch { return { w: '58', auto: true, tags: true, each: false }; } },
+  set(v) { try { localStorage.setItem(PRINTER_KEY, JSON.stringify(v)); } catch {} },
+};
+/** Print a ticket on the thermal printer through a hidden frame (no pop-up window needed). */
+export function printTicket(ref, opts = printer.get()) {
+  const qs = new URLSearchParams({ ref, w: opts.w, tags: opts.tags ? '1' : '0', each: opts.each ? '1' : '0', auto: '1' });
+  const f = document.createElement('iframe');
+  f.title = 'Ticket print';
+  f.style.cssText = 'position:fixed;left:-10000px;top:0;width:80mm;height:200mm;border:0';
+  f.src = '/print.html?' + qs;
+  document.body.append(f);
+  setTimeout(() => f.remove(), 120000);
+  try { localStorage.setItem('mt.lastPrinted', ref); } catch {}
+}
+
 async function counter(main) {
   let picker = null, trip = null, stops = [];
   const date = today();
-  main.innerHTML = html`<div class="head"><h1>Counter sale</h1></div>
-    <div class="card"><h3>Collect payment for an online reservation</h3><form id="lk" class="row"><label class="field" style="max-width:260px"><span>Booking reference</span><input name="ref" placeholder="MTXXXXXX" style="text-transform:uppercase" required></label><button class="btn ghost">Look up</button></form><div id="lkres"></div></div>
+  const pr = printer.get();
+  let last = null; try { last = localStorage.getItem('mt.lastPrinted'); } catch {}
+  main.innerHTML = html`<div class="head"><h1>Station terminal</h1>
+      <div class="row">${last ? html`<button class="btn ghost" id="reprint">Reprint ${last}</button>` : ''}</div></div>
+    <details class="card" id="pset"><summary><b>Ticket printer</b> <span class="small muted">· ${pr.w} mm paper${pr.auto ? ' · prints after each sale' : ''}${pr.tags ? ' · luggage tags' : ''}</span></summary>
+      <div class="row">
+        <label class="field" style="max-width:200px"><span>Paper roll</span><select id="pw"><option value="58" ${pr.w === '58' ? 'selected' : ''}>58 mm (small)</option><option value="80" ${pr.w === '80' ? 'selected' : ''}>80 mm (wide)</option></select></label>
+        <label class="chip"><input type="checkbox" id="pauto" ${pr.auto ? 'checked' : ''}>Print automatically after each sale</label>
+        <label class="chip"><input type="checkbox" id="ptags" ${pr.tags ? 'checked' : ''}>Print a tag for each luggage item</label>
+        <label class="chip"><input type="checkbox" id="peach" ${pr.each ? 'checked' : ''}>One slip per passenger</label>
+      </div>
+      <p class="small muted" style="margin:0">Set the thermal printer as this computer's default printer. To print without the print dialog every time, start Chrome with <span class="mono">--kiosk-printing</span>.</p></details>
+    <div class="card"><h3>Collect payment for a reservation or reprint a ticket</h3><form id="lk" class="row"><label class="field" style="max-width:260px"><span>Booking reference</span><input name="ref" placeholder="MTXXXXXX" style="text-transform:uppercase" required></label><button class="btn ghost">Look up</button></form><div id="lkres"></div></div>
     <div class="card"><h3>Sell to a walk-in passenger</h3>
       <div class="row"><label class="field" style="max-width:180px"><span>Date</span><input type="date" id="cd" value="${date}" min="${date}"></label><label class="field"><span>Departure</span><select id="ct"></select></label></div>
       <div id="sale"></div></div>`;
+  const savePrinter = () => { printer.set({ w: $('#pw', main).value, auto: $('#pauto', main).checked, tags: $('#ptags', main).checked, each: $('#peach', main).checked }); toast('Printer settings saved on this computer.'); };
+  ['#pw', '#pauto', '#ptags', '#peach'].forEach(id => $(id, main).addEventListener('change', savePrinter));
+  $('#reprint', main)?.addEventListener('click', () => { printTicket(last); toast(`Printing ${last}…`); });
+
   const loadTrips = async () => {
     const list = (await api('/operator/trips?date=' + $('#cd', main).value)).filter(t => !['departed', 'arrived', 'cancelled'].includes(t.status));
     $('#ct', main).innerHTML = '<option value="">Choose a departure</option>' + list.map(t => html`<option value="${t.id}">${t.depart_local} · ${t.route_name} · ${t.plate} · ${t.capacity - t.booked} free</option>`).join('');
@@ -129,12 +165,13 @@ async function counter(main) {
     if (!e.target.value) { $('#sale', main).innerHTML = ''; return; }
     trip = await api('/trips/' + e.target.value);
     stops = trip.stops;
-    $('#sale', main).innerHTML = html`<div class="booking"><div id="smap"></div><form id="sf" class="page" style="gap:10px">
+    $('#sale', main).innerHTML = html`<div class="booking"><div><div class="small muted" style="margin-bottom:6px">${trip.plate} · ${trip.class}. Seats sold here show as booked on the bus and online straight away.</div><div id="smap"></div></div>
+      <form id="sf" class="page" style="gap:10px" autocomplete="off">
       <div class="grid2"><label class="field"><span>Boarding</span><select name="from">${stops.filter(s => s.boarding).map(s => html`<option value="${s.id}">${s.city} · ${s.terminal}</option>`)}</select></label>
         <label class="field"><span>Dropping</span><select name="to">${stops.filter(s => s.dropping).reverse().map(s => html`<option value="${s.id}">${s.city} · ${s.terminal}</option>`)}</select></label></div>
-      <div id="pax" class="page" style="gap:8px"><div class="empty small">Tap seats on the map.</div></div>
-      <div class="grid2"><label class="field"><span>Contact phone (for SMS ticket)</span><input name="phone" inputmode="tel" required></label><label class="field"><span>Payment</span><select name="pm"><option value="cash">Cash now</option><option value="station">Reserve, pay later at this counter</option></select></label></div>
-      <div id="q"></div><button class="btn copper" disabled id="sell">Sell ticket</button></form></div>`;
+      <div id="pax" class="page" style="gap:10px"><div class="empty small">Tap seats on the bus map.</div></div>
+      <div class="grid2"><label class="field"><span>Phone for SMS ticket</span><input name="phone" inputmode="tel" required></label><label class="field"><span>Payment</span><select name="pm"><option value="cash">Cash now</option><option value="station">Reserve, pay later at this counter</option></select></label></div>
+      <div id="q"></div><button class="btn copper" disabled id="sell">Sell and print ticket</button></form></div>`;
     const f = $('#sf', main);
     const quote = async () => {
       const seats = picker?.seats || [];
@@ -146,22 +183,30 @@ async function counter(main) {
     };
     picker = seatPicker($('#smap', main), { tripId: trip.id, onChange: h => {
       const prev = formData(f);
-      $('#pax', main).innerHTML = h.seats.length ? h.seats.map((s, i) => html`<div class="paxrow" style="grid-template-columns:54px 1.4fr 100px 1fr auto">
-        <span class="seatno">${s}</span><input name="name${i}" placeholder="Passenger name" value="${prev['name' + i] || ''}" required>
-        <select name="idt${i}"><option>NRC</option><option>Passport</option><option>Other</option></select><input name="idn${i}" placeholder="ID number" value="${prev['idn' + i] || ''}" required>
-        <label class="chip"><input type="checkbox" name="child${i}">Child</label></div>`).join('') : '<div class="empty small">Tap seats on the map.</div>';
+      $('#pax', main).innerHTML = h.seats.length ? h.seats.map((s, i) => html`<div class="card" style="padding:10px;gap:8px">
+        <div class="row" style="align-items:center;flex-wrap:nowrap"><span class="seatno" style="min-width:54px">${s}</span><input name="name${i}" placeholder="Passenger full name" value="${prev['name' + i] || ''}" required aria-label="Passenger name, seat ${s}"></div>
+        <div class="row" style="align-items:center">
+          <select name="idt${i}" aria-label="ID type" style="flex:0 0 110px">${['NRC', 'Passport', 'Other'].map(t => html`<option ${prev['idt' + i] === t ? 'selected' : ''}>${t}</option>`)}</select>
+          <input name="idn${i}" placeholder="ID number" value="${prev['idn' + i] || ''}" required aria-label="ID number" style="flex:1 1 140px">
+          <select name="g${i}" aria-label="Gender" style="flex:0 0 110px">${[['M', 'Male'], ['F', 'Female'], ['X', 'Other']].map(([g, l]) => html`<option value="${g}" ${prev['g' + i] === g ? 'selected' : ''}>${l}</option>`)}</select>
+          <label class="chip"><input type="checkbox" name="child${i}" ${prev['child' + i] ? 'checked' : ''}>Child</label></div>
+        ${luggageFields(i, prev)}</div>`).join('') : '<div class="empty small">Tap seats on the bus map.</div>';
       quote();
     } });
-    f.addEventListener('change', quote);
+    bindLuggage(f);
+    f.addEventListener('change', e => { if (!e.target.closest('.lug')) quote(); });
     f.addEventListener('submit', ev => {
       ev.preventDefault();
       const v = formData(f);
       busy($('#sell', main), async () => {
         const r = await api('/counter/bookings', { method: 'POST', body: { payment_method: v.pm, contact: { name: v.name0, phone: v.phone },
-          legs: [{ trip_id: trip.id, hold_token: picker.token, from_stop_id: Number(v.from), to_stop_id: Number(v.to), passengers: picker.seats.map((s, i) => ({ seat_no: s, name: v['name' + i], id_type: v['idt' + i], id_number: v['idn' + i], is_child: !!v['child' + i] })) }] } });
-        toast(v.pm === 'cash' ? `Sold. Collect ${kwacha(r.total)}.` : `Reserved ${r.bookings[0].ref}.`);
-        receipt(r.bookings[0].ref);
+          legs: [{ trip_id: trip.id, hold_token: picker.token, from_stop_id: Number(v.from), to_stop_id: Number(v.to),
+            passengers: picker.seats.map((s, i) => ({ seat_no: s, name: v['name' + i], id_type: v['idt' + i], id_number: v['idn' + i], gender: v['g' + i], is_child: !!v['child' + i], luggage: readLuggage(v, i) })) }] } });
+        const ref = r.bookings[0].ref;
+        toast(v.pm === 'cash' ? `Sold ${ref}. Collect ${kwacha(r.total)}.` : `Reserved ${ref}. Collect ${kwacha(r.total)} before it expires.`);
+        if (printer.get().auto) printTicket(ref); else receipt(ref);
         $('#ct', main).dispatchEvent(new Event('change'));
+        loadTrips().then(() => { $('#ct', main).value = String(trip.id); });
       });
     });
   });
@@ -169,22 +214,24 @@ async function counter(main) {
   lk.addEventListener('submit', e => { e.preventDefault(); busy(lk.querySelector('button'), async () => {
     const r = await api('/counter/lookup/' + encodeURIComponent(lk.ref.value.trim()));
     const due = r.bookings.filter(b => b.status === 'reserved').reduce((a, b) => a + b.total, 0);
-    $('#lkres', main).innerHTML = html`<div class="tablewrap"><table><tbody>${r.bookings.map(b => html`<tr><td class="mono">${b.ref}</td><td>${b.from_city} → ${b.to_city}<br><span class="small muted">${dateTime(b.board_at)}</span></td><td>${b.seats.filter(s => s.active).map(s => `${s.seat_no} ${s.passenger_name}`).join(', ')}</td><td>${pill(b.status)}</td><td class="r">${kwacha(b.total)}</td></tr>`)}</tbody></table></div>
-      ${due ? html`<button class="btn copper" id="settle">Take ${kwacha(due)} cash and confirm</button>` : html`<button class="btn ghost" id="rcpt">Print receipt</button>`}`;
-    $('#settle', main)?.addEventListener('click', ev => busy(ev.target, async () => { await api('/counter/settle/' + r.group_ref, { method: 'POST' }); toast('Paid. Ticket sent by SMS.'); receipt(r.bookings[0].ref); lk.requestSubmit(); }));
-    $('#rcpt', main)?.addEventListener('click', () => receipt(r.bookings[0].ref));
+    $('#lkres', main).innerHTML = html`<div class="tablewrap"><table><tbody>${r.bookings.map(b => html`<tr><td class="mono">${b.ref}</td><td>${b.from_city} → ${b.to_city}<br><span class="small muted">${dateTime(b.board_at)}</span></td>
+        <td>${b.seats.filter(s => s.active).map(s => html`<div>${s.seat_no} ${s.passenger_name} <span class="small muted">· ${s.luggage.text}</span></div>`)}</td><td>${pill(b.status)}</td><td class="r">${kwacha(b.total)}</td>
+        <td>${['confirmed', 'reserved', 'completed'].includes(b.status) ? html`<button class="btn ghost sm" data-print="${b.ref}">Print</button>` : ''}</td></tr>`)}</tbody></table></div>
+      ${due ? html`<button class="btn copper" id="settle">Take ${kwacha(due)} cash, confirm and print</button>` : ''}`;
+    $('#settle', main)?.addEventListener('click', ev => busy(ev.target, async () => { await api('/counter/settle/' + r.group_ref, { method: 'POST' }); toast('Paid. Ticket sent by SMS.'); r.bookings.forEach(b => printTicket(b.ref)); lk.requestSubmit(); }));
   }); });
+  main.addEventListener('click', e => { const b = e.target.closest('[data-print]'); if (b) { printTicket(b.dataset.print); toast(`Printing ${b.dataset.print}…`); } });
   await loadTrips();
   return () => picker?.destroy();
 }
-async function receipt(ref) {
-  const t = await api('/counter/receipt/' + ref);
-  const m = modal(html`<div class="receipt" style="font-family:var(--f-mono);font-size:12px;display:grid;gap:4px;max-width:300px;margin:0 auto">
-    <b style="font-size:14px">${t.operator_name}</b><span>${t.from_city} → ${t.to_city}</span><span>${dateTime(t.board_at)} · ${t.plate}</span><span>Board at: ${t.from_terminal}</span>
-    <hr style="border:0;border-top:1px dashed currentColor;width:100%">${t.seats.filter(s => s.active).map(s => html`<span>Seat ${s.seat_no}  ${s.passenger_name}</span>`)}
-    <hr style="border:0;border-top:1px dashed currentColor;width:100%"><span>Ref: <b>${t.ref}</b></span><span>Status: ${t.status}</span><span>Total: ${kwacha(t.total)} (${t.payment_method})</span><span>Issued ${dateTime(new Date().toISOString())}</span></div>
-    <div class="row no-print" style="justify-content:center"><button class="btn ghost" data-close>Close</button><button class="btn" id="pr">Print receipt</button></div>`);
-  $('#pr', m.el).addEventListener('click', () => window.print());
+/** Preview the thermal ticket on screen with a print button (used when automatic printing is off). */
+function receipt(ref) {
+  const pr = printer.get();
+  const qs = new URLSearchParams({ ref, w: pr.w, tags: pr.tags ? '1' : '0', each: pr.each ? '1' : '0' });
+  const m = modal(html`<div class="head"><h2>Ticket ${ref}</h2><button class="btn ghost sm" data-close>Close</button></div>
+    <iframe src="/print.html?${qs}" title="Ticket preview" style="width:100%;height:60vh;border:1px solid var(--line);border-radius:8px;background:#fff"></iframe>
+    <div class="row" style="justify-content:flex-end"><button class="btn" id="pr">Print</button></div>`);
+  $('#pr', m.el).addEventListener('click', () => { printTicket(ref); });
 }
 
 /* ---------- fleet ---------- */

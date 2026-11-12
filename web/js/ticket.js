@@ -21,8 +21,8 @@ async function load() {
             <div><span class="label">Bus</span><b>${t.class}</b><span class="mono">${t.plate}</span></div>
             <div><span class="label">Paid</span><b>${kwacha(t.total)}</b><span class="small muted">${t.payment_method || ''}</span></div>
           </div>
-          <div class="tablewrap"><table><thead><tr><th>Seat</th><th>Passenger</th><th>ID</th><th></th></tr></thead><tbody>
-            ${seats.map(s => html`<tr><td class="mono">${s.seat_no}</td><td>${s.passenger_name}${s.is_child ? ' (child)' : ''}</td><td class="mono">${s.id_type} ${s.id_number}</td><td>${s.boarded_at ? raw('<span class="pill ok">boarded</span>') : ''}</td></tr>`)}
+          <div class="tablewrap"><table><thead><tr><th>Seat</th><th>Passenger</th><th>ID</th><th>Luggage</th><th></th></tr></thead><tbody>
+            ${seats.map(s => html`<tr><td class="mono">${s.seat_no}</td><td>${s.passenger_name}${s.is_child ? ' (child)' : ''}</td><td class="mono">${s.id_type} ${s.id_number}</td><td class="small">${s.luggage.text}</td><td>${s.boarded_at ? raw('<span class="pill ok">boarded</span>') : ''}</td></tr>`)}
           </tbody></table></div>
           <p class="small muted" style="margin:0">Be at the boarding point 30 minutes early with the ID above. The QR code works once at the gate.</p>
           <div class="row no-print">

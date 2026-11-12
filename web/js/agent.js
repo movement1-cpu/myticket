@@ -74,48 +74,108 @@ async function tripView(id) {
   catch (e) { if (e.status) return toast(e.message, true); if (!m) return toast('You are offline and this trip was not saved on the phone.', true); }
   const boardedLocal = new Set(queue.all().filter(c => c.trip_id === id).map(c => c.ref));
   const isBoarded = s => s.boarded_at || boardedLocal.has(s.ref);
-  const draw = () => {
+  let view = local.get('view', 'bus');
+  let fresh = new Set(); // seats that appeared since the last refresh (sold at the station or online)
+
+  // Built once so the camera keeps running; only the seat area and counters are redrawn.
+  app.innerHTML = html`<div class="page">
+    <div><button class="btn ghost sm" id="back">← Trips</button></div>
+    <div class="head"><div><h2>${m.trip.depart_local} · ${m.trip.stops[0].city} → ${m.trip.stops.at(-1).city}</h2><span class="small muted" id="saved"></span></div><b style="font-size:22px" id="count"></b></div>
+    <div class="card"><div id="res" class="result" hidden></div><video id="v" playsinline muted hidden></video>
+      <div class="bigbtns"><button class="btn copper" id="cam">Scan QR code</button><button class="btn ghost" id="manual">Type reference</button></div></div>
+    <div class="card"><div class="head"><h3>On this bus</h3><div class="chips"><label class="chip"><input type="radio" name="view" value="bus" ${view === 'bus' ? 'checked' : ''}>Bus</label><label class="chip"><input type="radio" name="view" value="list" ${view === 'list' ? 'checked' : ''}>List</label></div></div>
+      <div id="lugsum" class="small"></div><div id="seats"></div><div id="detail"></div></div>
+    <div class="card"><h3>Trip status</h3><p class="small muted" style="margin:0">Passengers get an SMS for each change. Needs internet.</p>
+      <div class="bigbtns"><button class="btn" data-st="boarding">Boarding</button><button class="btn" data-st="departed">Departed</button><button class="btn ghost" data-st="delayed">Delayed…</button><button class="btn ghost" data-st="arrived">Arrived</button></div>
+      <label class="chip" style="justify-self:start"><input type="checkbox" id="gps" ${gpsWatch ? 'checked' : ''}>Share this phone's location for live tracking</label></div>
+  </div>`;
+
+  const bySeat = () => new Map(m.seats.map(s => [s.seat_no, s]));
+  function drawSeats() {
     const total = m.seats.length, on = m.seats.filter(isBoarded).length;
-    app.innerHTML = html`<div class="page">
-      <div><button class="btn ghost sm" id="back">← Trips</button></div>
-      <div class="head"><div><h2>${m.trip.depart_local} · ${m.trip.stops[0].city} → ${m.trip.stops.at(-1).city}</h2><span class="small muted">Manifest saved ${time(m.downloaded_at)} · works offline</span></div><b style="font-size:22px">${on}/${total}</b></div>
-      <div class="card"><div id="res" class="result" hidden></div><video id="v" playsinline muted hidden></video>
-        <div class="bigbtns"><button class="btn copper" id="cam">Scan QR code</button><button class="btn ghost" id="manual">Type reference</button></div></div>
-      <div class="card"><h3>Trip status</h3><p class="small muted" style="margin:0">Passengers get an SMS for each change. Needs internet.</p>
-        <div class="bigbtns"><button class="btn" data-st="boarding">Boarding</button><button class="btn" data-st="departed">Departed</button><button class="btn ghost" data-st="delayed">Delayed…</button><button class="btn ghost" data-st="arrived">Arrived</button></div>
-        <label class="chip" style="justify-self:start"><input type="checkbox" id="gps" ${gpsWatch ? 'checked' : ''}>Share this phone's location for live tracking</label></div>
-      <div class="card"><h3>Passengers</h3>${m.seats.map(s => html`<div class="pax"><span class="seatno">${s.seat_no}</span><span><b>${s.passenger_name}</b>${s.is_child ? ' (child)' : ''}<br><span class="small muted">${s.id_type} ${s.id_number} · to ${s.to_city} · ${s.ref}${s.status === 'reserved' ? ' · UNPAID' : ''}</span></span>
-        <span>${isBoarded(s) ? raw('<span class="pill ok">on</span>') : ''}</span></div>`)}</div>
-    </div>`;
-    $('#back').addEventListener('click', () => { stopCamera?.(); tripsView(); });
-    $('#cam').addEventListener('click', () => stopCamera ? (stopCamera(), stopCamera = null, $('#v').hidden = true) : camera(check));
-    $('#manual').addEventListener('click', () => { const ref = window.prompt?.('Booking reference (MT…)'); if (ref) check(ref.trim().toUpperCase()); });
-    $$('[data-st]').forEach(b => b.addEventListener('click', () => setStatus(b, id)));
-    $('#gps').addEventListener('change', e => e.target.checked ? startGps(id) : stopGps());
-  };
+    const cap = m.layout ? m.layout.decks.flatMap(d => d.rows.flat()).filter(Boolean).length : total;
+    $('#count').textContent = `${on}/${total}`;
+    $('#saved').textContent = `${total} of ${cap} seats sold · updated ${time(m.downloaded_at)}${navigator.onLine ? '' : ' · offline copy'}`;
+    const items = { bags: 0, sacks: 0, containers: 0, boxes: 0, crates: 0, other: 0 };
+    m.seats.forEach(s => Object.keys(items).forEach(k => { items[k] += s.luggage?.items?.[k] || 0; }));
+    const lugTotal = Object.values(items).reduce((a, b) => a + b, 0);
+    $('#lugsum').innerHTML = html`<b>Luggage: ${lugTotal} item${lugTotal === 1 ? '' : 's'}</b>${lugTotal ? ' · ' + Object.entries(items).filter(([, n]) => n).map(([k, n]) => `${n} ${k}`).join(', ') : ''}`;
+    const map = bySeat(), held = new Set(m.held || []);
+    if (view === 'bus' && m.layout) {
+      $('#seats').innerHTML = html`<div class="busmap">${m.layout.decks.map(d => html`<div class="deck"><div class="row" style="justify-content:space-between"><span class="label">${d.name}</span><span class="label">Front ▲</span></div>
+        <div class="deck-grid" style="grid-template-columns:repeat(${d.cols}, 46px)">${d.rows.map(r => r.map(seat => {
+          if (!seat) return raw('<span></span>');
+          const p = map.get(seat.no);
+          const cls = p ? (isBoarded(p) ? 'boarded' : p.status === 'reserved' ? 'unpaid' : 'booked') : held.has(seat.no) ? 'held' : '';
+          return html`<button type="button" class="bseat ${seat.kind === 'berth' ? 'berth' : ''} ${cls} ${fresh.has(seat.no) ? 'new' : ''}" data-seat="${seat.no}"
+            aria-label="Seat ${seat.no}: ${p ? `${p.passenger_name}, ${cls}` : held.has(seat.no) ? 'someone is paying' : 'empty'}">${seat.no}${p?.luggage?.total ? html`<span class="bag">${p.luggage.total}</span>` : ''}</button>`;
+        }))}</div></div>`)}</div>
+        <div class="legend" style="margin-top:8px"><span><i></i>Empty</span><span><i style="background:var(--seat-lock);border-color:var(--seat-lock)"></i>Being paid for</span>
+          <span><i style="background:var(--copper-soft);border-color:var(--copper)"></i>Sold, not yet on</span><span><i style="background:var(--brand);border-color:var(--brand)"></i>Boarded</span>
+          <span><i style="border:2px dashed var(--warn)"></i>Unpaid reservation</span><span><b class="mono">2</b> = luggage items</span></div>`;
+    } else {
+      $('#seats').innerHTML = m.seats.length ? m.seats.map(s => html`<div class="pax"><span class="seatno">${s.seat_no}</span><span><b>${s.passenger_name}</b>${s.is_child ? ' (child)' : ''}<br>
+        <span class="small muted">${s.id_type} ${s.id_number} · to ${s.to_city} · ${s.ref}${s.status === 'reserved' ? ' · UNPAID' : ''}${s.channel === 'counter' ? ' · sold at station' : ''}</span><br>
+        <span class="small">Luggage: ${s.luggage?.text || 'No luggage'}</span></span><span>${isBoarded(s) ? raw('<span class="pill ok">on</span>') : ''}</span></div>`).join('') : '<div class="empty">No passengers yet.</div>';
+    }
+  }
+  function showSeat(no) {
+    const p = bySeat().get(no);
+    $('#detail').innerHTML = p ? html`<div class="notice" style="margin-top:8px"><b>Seat ${no}: ${p.passenger_name}</b>${p.is_child ? ' (child)' : ''} · ${isBoarded(p) ? 'boarded' : p.status === 'reserved' ? 'NOT PAID' : 'not yet boarded'}<br>
+      ${p.id_type} ${p.id_number} · gets off at ${p.to_stop}, ${p.to_city}<br>Luggage: ${p.luggage?.text || 'No luggage'}<br><span class="mono">${p.ref}</span>${p.channel === 'counter' ? ' · sold at the station' : p.channel === 'web' ? ' · booked online' : ''}</div>`
+      : html`<div class="notice" style="margin-top:8px">Seat ${no} is ${(m.held || []).includes(no) ? 'being paid for right now' : 'empty'}.</div>`;
+  }
+
+  /** Pull the latest manifest so seats sold at the station or online show up on the bus. */
+  async function refresh() {
+    if (!navigator.onLine) return;
+    try {
+      const next = await api(`/agent/trips/${id}/manifest`);
+      const before = new Set(m.seats.map(s => s.seat_no));
+      fresh = new Set(next.seats.map(s => s.seat_no).filter(s => !before.has(s)));
+      if (fresh.size) toast(`New booking: seat ${[...fresh].join(', ')}.`);
+      m = next; local.set('manifest.' + id, m);
+      drawSeats();
+    } catch {}
+  }
+  const timer = setInterval(refresh, 15000);
+  const leave = () => { clearInterval(timer); stopCamera?.(); stopCamera = null; };
+
+  $('#back').addEventListener('click', () => { leave(); tripsView(); });
+  $('#cam').addEventListener('click', () => { if (stopCamera) { stopCamera(); stopCamera = null; $('#v').hidden = true; } else camera(check); });
+  $('#manual').addEventListener('click', () => { const ref = window.prompt?.('Booking reference (MT…)'); if (ref) check(ref.trim().toUpperCase()); });
+  $$('[data-st]').forEach(b => b.addEventListener('click', () => setStatus(b, id)));
+  $('#gps').addEventListener('change', e => e.target.checked ? startGps(id) : stopGps());
+  $$('[name=view]').forEach(r => r.addEventListener('change', () => { view = r.value; local.set('view', view); $('#detail').innerHTML = ''; drawSeats(); }));
+  $('#seats').addEventListener('click', e => { const b = e.target.closest('[data-seat]'); if (b) showSeat(b.dataset.seat); });
+
   const show = (cls, text) => { const r = $('#res'); r.hidden = false; r.className = 'result ' + cls; r.textContent = text; navigator.vibrate?.(cls === 'ok' ? 80 : [60, 60, 60]); };
+  const lugLine = seats => seats.map(s => s.luggage?.has ? `Seat ${s.seat_no} luggage: ${s.luggage.text}.` : '').filter(Boolean).join(' ');
   async function check(code) {
     const scanned_at = new Date().toISOString();
     const client_id = crypto.randomUUID();
     if (navigator.onLine) {
       try {
         const r = await api(`/agent/trips/${id}/scan`, { method: 'POST', body: { code, client_id, scanned_at } });
-        if (r.result === 'boarded') { r.seats.forEach(s => { const x = m.seats.find(y => y.seat_no === s.seat_no); if (x) x.boarded_at = scanned_at; }); local.set('manifest.' + id, m); draw(); show('ok', `Board: seat ${r.seats.map(s => s.seat_no).join(', ')} · ${r.seats[0].passenger_name}. Check ${r.seats[0].id_type}.`); }
-        else { draw(); show(r.result === 'duplicate' ? 'warn' : 'bad', r.message); }
+        if (r.result === 'boarded') {
+          r.seats.forEach(s => { const x = m.seats.find(y => y.seat_no === s.seat_no); if (x) x.boarded_at = scanned_at; });
+          local.set('manifest.' + id, m); drawSeats();
+          show('ok', `Board: seat ${r.seats.map(s => s.seat_no).join(', ')} · ${r.seats[0].passenger_name}. Check ${r.seats[0].id_type}. ${lugLine(r.seats)}`);
+        } else { drawSeats(); show(r.result === 'duplicate' ? 'warn' : 'bad', r.message); }
         return;
       } catch (e) { if (e.status) { show('bad', e.message); return; } }
     }
     // Offline: verify against the saved manifest.
     const ref = code.startsWith('MT1|') ? Object.keys(m.codes).find(k => m.codes[k] === code) : (m.codes[code] ? code : null);
-    if (!ref) { draw(); return show('bad', code.startsWith('MT1|') ? 'Not a ticket for this bus (or forged).' : `No booking ${code} on this bus.`); }
+    if (!ref) return show('bad', code.startsWith('MT1|') ? 'Not a ticket for this bus (or forged).' : `No booking ${code} on this bus.`);
     const seats = m.seats.filter(s => s.ref === ref);
-    if (seats[0]?.status === 'reserved') { draw(); return show('bad', `${ref} is not paid. Send them to the counter.`); }
-    if (seats.every(isBoarded)) { draw(); return show('warn', `Already boarded: ${ref}.`); }
+    if (seats[0]?.status === 'reserved') return show('bad', `${ref} is not paid. Send them to the counter.`);
+    if (seats.every(isBoarded)) return show('warn', `Already boarded: ${ref}.`);
     queue.push({ client_id, trip_id: id, code, ref, scanned_at });
-    boardedLocal.add(ref); setNet(); draw();
-    show('ok', `Board (offline): seat ${seats.map(s => s.seat_no).join(', ')} · ${seats[0].passenger_name}. Check ${seats[0].id_type}.`);
+    boardedLocal.add(ref); setNet(); drawSeats();
+    show('ok', `Board (offline): seat ${seats.map(s => s.seat_no).join(', ')} · ${seats[0].passenger_name}. Check ${seats[0].id_type}. ${lugLine(seats)}`);
   }
-  draw();
+  drawSeats();
 }
 
 async function setStatus(btn, id) {

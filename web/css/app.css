@@ -209,3 +209,25 @@ td.r, th.r { text-align: right; }
   .hero h1 { font-size: 24px; }
 }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* luggage counters (touch-friendly for station terminals) */
+.lug { display: grid; gap: 8px; }
+.lug-counts { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 185px), 1fr)); gap: 6px; }
+.stepper { display: grid; grid-template-columns: minmax(0, 1fr) 34px 42px 34px; align-items: center; gap: 4px; border: 1px solid var(--line); border-radius: 6px; padding: 4px 4px 4px 8px; background: var(--surface); }
+.stepper span { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stepper button { height: 34px; border: 1px solid var(--line); background: var(--sunk); color: var(--ink); border-radius: 6px; font: 700 18px var(--f-body); cursor: pointer; padding: 0; }
+.stepper button:active { background: var(--brand-soft); }
+.stepper input { text-align: center; padding: 6px 2px; font-variant-numeric: tabular-nums; -moz-appearance: textfield; }
+.stepper input::-webkit-inner-spin-button { -webkit-appearance: none; }
+
+/* field app bus view */
+.busmap { display: flex; gap: 12px; flex-wrap: wrap; }
+.bseat { width: 46px; height: 46px; border-radius: 7px 7px 3px 3px; border: 1.5px solid var(--line); background: var(--surface); display: grid; place-items: center; font: 700 12px var(--f-mono); color: var(--muted); padding: 0; position: relative; cursor: pointer; }
+.bseat.berth { height: 70px; border-radius: 7px; }
+.bseat.booked { background: var(--copper-soft); border-color: var(--copper); color: var(--ink); }
+.bseat.boarded { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); }
+.bseat.unpaid { background: var(--surface); border: 2px dashed var(--warn); color: var(--warn); }
+.bseat.held { background: var(--seat-lock); border-color: var(--seat-lock); color: var(--ink); }
+.bseat .bag { position: absolute; right: -5px; top: -6px; background: var(--ink); color: var(--bg); font-size: 10px; border-radius: 999px; padding: 0 5px; line-height: 15px; }
+.bseat.new { animation: pulse 1.2s ease-out 3; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 var(--copper); } 100% { box-shadow: 0 0 0 10px transparent; } }

@@ -150,7 +150,11 @@ export function seedDemo(db) {
     // Past and upcoming bookings so dashboards, manifests and My trips have content.
     const insB = db.prepare(`INSERT INTO bookings (ref, group_ref, user_id, created_by, trip_id, operator_id, channel, status, from_stop_id, to_stop_id, contact_name, contact_phone, contact_email,
       fare_total, discount, booking_fee, total, commission, payment_method, confirmed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`);
-    const insS = db.prepare('INSERT INTO booking_seats (booking_id, trip_id, seat_no, passenger_name, id_type, id_number, gender, is_child, fare, boarded_at) VALUES (?,?,?,?,?,?,?,?,?,?)');
+    const insS0 = db.prepare(`INSERT INTO booking_seats (booking_id, trip_id, seat_no, passenger_name, id_type, id_number, gender, is_child, fare, boarded_at,
+      lug_bags, lug_sacks, lug_containers, lug_boxes, lug_crates, lug_other, lug_note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    // Typical intercity luggage: most carry a bag, some carry sacks of mealie meal, containers, boxes or crates.
+    const lug = () => rand() < 0.25 ? [0, 0, 0, 0, 0, 0, null] : [1 + Math.floor(rand() * 2), rand() < 0.2 ? 1 + Math.floor(rand() * 2) : 0, rand() < 0.1 ? 1 : 0, rand() < 0.15 ? 1 : 0, rand() < 0.05 ? 1 : 0, 0, null];
+    const insS = { run: (...a) => insS0.run(...a, ...lug()) };
     const nrc = () => `${String(100000 + Math.floor(rand() * 899999))}/${String(10 + Math.floor(rand() * 80))}/1`;
     for (let d = -30; d <= 3; d++) {
       const date = addDays(today, d);

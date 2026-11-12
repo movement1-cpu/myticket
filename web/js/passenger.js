@@ -1,5 +1,6 @@
 import { $, $$, html, raw, esc, api, auth, toast, modal, busy, formData, kwacha, kw0, time, day, dayOf, dateTime, dur, today, plusDays, pill, download } from './core.js';
 import { seatPicker, countdown } from './seatmap.js';
+import { luggageFields, bindLuggage, readLuggage } from './luggage.js';
 
 /* ---------- cart (survives reloads during checkout) ---------- */
 const cart = {
@@ -222,7 +223,7 @@ export async function checkout(app) {
     <div class="head"><div><a href="#/seats" class="small">← Change seats</a><h1>Passenger details</h1></div>
       <div class="card" style="padding:8px 12px;gap:0"><span class="label">Seats held for</span><span class="timer" id="timer"></span></div></div>
     <form id="co" class="page" novalidate>
-      <section class="card"><h3>Travellers</h3><p class="small muted" style="margin:0">Names and ID numbers go on the passenger manifest checked by police and at borders. Bring the same ID.</p>
+      <section class="card"><h3>Travellers</h3><p class="small muted" style="margin:0">Names and ID numbers go on the passenger manifest checked by police and at borders. Bring the same ID. Tell us about luggage for the hold so the crew can plan space.</p>
         ${seats.map((s, i) => html`<div class="paxrow">
           <span class="seatno" title="Seat">${s}${c.legs[1] ? raw(`<br><span class="small">${esc(c.legs[1].hold.seats[i])}</span>`) : ''}</span>
           <label class="field"><span>Full name</span><input name="name${i}" value="${saved['name' + i] ?? (i === 0 && u?.role === 'passenger' ? u.name : '')}" required></label>
@@ -230,7 +231,7 @@ export async function checkout(app) {
           <label class="field"><span>ID number</span><input name="idn${i}" value="${saved['idn' + i] || ''}" placeholder="123456/78/1" required></label>
           <label class="field"><span>Gender${female.has(i) ? ' (women-only seat)' : ''}</span><select name="g${i}">${[['F', 'Female'], ['M', 'Male'], ['X', 'Prefer not to say']].map(([v, l]) => html`<option value="${v}" ${(saved['g' + i] || (female.has(i) ? 'F' : 'M')) === v ? 'selected' : ''}>${l}</option>`)}</select></label>
           <label class="chip" style="align-self:center"><input type="checkbox" name="child${i}" ${saved['child' + i] ? 'checked' : ''}>Child under 12</label>
-        </div>`)}
+        </div>${luggageFields(i, saved)}`)}
       </section>
       <section class="card"><h3>Contact for tickets and alerts</h3>
         <div class="grid3">
@@ -253,7 +254,7 @@ export async function checkout(app) {
   </div>`;
   const f = $('#co', app);
   const timer = countdown($('#timer', app), c.legs.map(l => l.hold.expires_at).sort()[0], () => { toast('Your seat hold expired. Pick your seats again.', true); location.hash = '#/seats'; });
-  const passengers = (i, v) => seats.map((_, k) => ({ seat_no: c.legs[i].hold.seats[k], name: v['name' + k], id_type: v['idt' + k], id_number: v['idn' + k], gender: v['g' + k], is_child: !!v['child' + k] }));
+  const passengers = (i, v) => seats.map((_, k) => ({ seat_no: c.legs[i].hold.seats[k], name: v['name' + k], id_type: v['idt' + k], id_number: v['idn' + k], gender: v['g' + k], is_child: !!v['child' + k], luggage: readLuggage(v, k) }));
   let promoOk = '';
   const price = async () => {
     const v = formData(f);
@@ -267,7 +268,8 @@ export async function checkout(app) {
         <div class="sumrow total"><span>Total</span><span class="num">${kwacha(fare - disc + fee)}</span></div>`;
     } catch (e) { $('#price', app).innerHTML = html`<div class="notice bad">${e.message}</div>`; if (promoOk) promoOk = ''; }
   };
-  f.addEventListener('change', price);
+  bindLuggage(f);
+  f.addEventListener('change', e => { if (!e.target.closest('.lug')) price(); });
   $('#applyPromo', app).addEventListener('click', () => { promoOk = f.promo.value.trim().toUpperCase(); price().then(() => promoOk && toast(`Promo ${promoOk} checked.`)); });
   $('#signin', app)?.addEventListener('click', () => sessionStorage.setItem('mt.next', '#/checkout'));
   f.addEventListener('submit', e => {

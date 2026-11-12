@@ -6,6 +6,8 @@ import { ensureTrips, routeStops } from '../services/trips.js';
 import { parseQr, qrPayload } from '../services/tickets.js';
 import { cancelBooking } from '../services/bookings.js';
 import { notifyContact } from '../services/notify.js';
+import { layoutForTrip } from '../services/seats.js';
+import { luggageOf } from '../services/luggage.js';
 
 /**
  * Conductor / station agent field app.
@@ -37,17 +39,22 @@ export default function agentRoutes(db) {
   /** Everything the device needs to board this trip offline. */
   r.get('/agent/trips/:id/manifest', ...field, (req, res) => {
     const t = myTrip(req);
-    const seats = db.prepare(`SELECT bs.id, bs.seat_no, bs.passenger_name, bs.id_type, bs.id_number, bs.is_child, bs.boarded_at, b.ref, b.status, b.contact_phone,
+    const seats = db.prepare(`SELECT bs.id, bs.seat_no, bs.passenger_name, bs.id_type, bs.id_number, bs.is_child, bs.boarded_at, b.ref, b.status, b.contact_phone, b.channel,
+        bs.lug_bags, bs.lug_sacks, bs.lug_containers, bs.lug_boxes, bs.lug_crates, bs.lug_other, bs.lug_note,
         ft.name from_stop, tt.name to_stop, tt.city to_city
       FROM booking_seats bs JOIN bookings b ON b.id = bs.booking_id
       JOIN route_stops fs ON fs.id = b.from_stop_id JOIN terminals ft ON ft.id = fs.terminal_id
       JOIN route_stops ts ON ts.id = b.to_stop_id JOIN terminals tt ON tt.id = ts.terminal_id
-      WHERE bs.trip_id = ? AND bs.active = 1 AND b.status IN ('confirmed','completed','reserved') ORDER BY bs.seat_no`).all(t.id);
+      WHERE bs.trip_id = ? AND bs.active = 1 AND b.status IN ('confirmed','completed','reserved') ORDER BY bs.seat_no`).all(t.id)
+      .map(s => ({ ...s, luggage: luggageOf(s) }));
+    // Seats someone is paying for right now (online checkout or another counter), so the bus view shows them as taken.
+    const held = db.prepare('SELECT seat_no FROM seat_holds WHERE trip_id = ? AND expires_at > ?').all(t.id, new Date().toISOString()).map(h => h.seat_no);
+    const layout = layoutForTrip(db, t.id);
     const refs = [...new Set(seats.map(s => s.ref))];
     res.json({
       trip: { id: t.id, status: t.status, depart_local: localTime(t.depart_at), service_date: t.service_date, stops: routeStops(db, t.route_id).map(s => ({ city: s.city, terminal: s.terminal })) },
       codes: Object.fromEntries(refs.map(ref => [ref, qrPayload(ref)])),
-      seats, downloaded_at: new Date().toISOString(),
+      seats, held, layout: { name: layout.name, decks: layout.spec.decks }, downloaded_at: new Date().toISOString(),
     });
   });
 
@@ -76,7 +83,7 @@ export default function agentRoutes(db) {
       for (const s of fresh) db.prepare('UPDATE booking_seats SET boarded_at = ?, boarded_by = ? WHERE id = ? AND boarded_at IS NULL').run(at, req.user.id, s.id);
       record('boarded', fresh[0].id);
     });
-    return { client_id, result: 'boarded', ref, seats: fresh.map(s => ({ seat_no: s.seat_no, passenger_name: s.passenger_name, id_type: s.id_type, id_number: s.id_number })) };
+    return { client_id, result: 'boarded', ref, seats: fresh.map(s => ({ seat_no: s.seat_no, passenger_name: s.passenger_name, id_type: s.id_type, id_number: s.id_number, luggage: luggageOf(s) })) };
   };
 
   r.post('/agent/trips/:id/scan', ...field, (req, res) => res.json(checkin(req, req.body, myTrip(req).id)));

@@ -10,7 +10,8 @@ import { ensureTrips, routeStops } from '../services/trips.js';
 import { createBookings, settleAtCounter, cancelBooking, groupBookings } from '../services/bookings.js';
 import { operatorTerms } from '../services/pricing.js';
 import { notifyContact } from '../services/notify.js';
-import { ticketData } from '../services/tickets.js';
+import { ticketData, qrSvg } from '../services/tickets.js';
+import { luggageOf, LUGGAGE_KINDS } from '../services/luggage.js';
 
 const CLASSES = ['Luxury', 'Semi-Luxury', 'VIP Sleeper', 'Express', 'Standard'];
 const AMENITIES = ['Wi-Fi', 'AC', 'USB Charging', 'Toilet', 'Reclining Seats', 'TV', 'Refreshments', 'Blanket'];
@@ -236,21 +237,27 @@ export default function operatorRoutes(db) {
   r.get('/operator/trips/:id/manifest', ...desk, (req, res) => {
     const t = mine('trips', req.params.id, req.operatorId);
     const rows = db.prepare(`SELECT bs.seat_no, bs.passenger_name, bs.id_type, bs.id_number, bs.gender, bs.is_child, b.contact_phone, b.ref, b.status, b.channel,
-        ft.city from_city, ft.name from_stop, tt.city to_city, tt.name to_stop, bs.boarded_at
+        ft.city from_city, ft.name from_stop, tt.city to_city, tt.name to_stop, bs.boarded_at,
+        bs.lug_bags, bs.lug_sacks, bs.lug_containers, bs.lug_boxes, bs.lug_crates, bs.lug_other, bs.lug_note
       FROM booking_seats bs JOIN bookings b ON b.id = bs.booking_id
       JOIN route_stops fs ON fs.id = b.from_stop_id JOIN terminals ft ON ft.id = fs.terminal_id
       JOIN route_stops ts ON ts.id = b.to_stop_id JOIN terminals tt ON tt.id = ts.terminal_id
-      WHERE bs.trip_id = ? AND bs.active = 1 AND b.status IN ('confirmed','completed','reserved') ORDER BY CAST(bs.seat_no AS INTEGER), bs.seat_no`).all(t.id);
+      WHERE bs.trip_id = ? AND bs.active = 1 AND b.status IN ('confirmed','completed','reserved') ORDER BY CAST(bs.seat_no AS INTEGER), bs.seat_no`).all(t.id)
+      .map(r => ({ ...r, luggage: luggageOf(r) }));
+    const luggage_totals = Object.fromEntries(LUGGAGE_KINDS.map(([k]) => [k, rows.reduce((a, r) => a + r.luggage.items[k], 0)]));
     if (req.query.format === 'csv') {
-      const head = ['Seat', 'Passenger', 'ID type', 'ID number', 'Gender', 'Child', 'Phone', 'Booking', 'Status', 'From', 'To', 'Boarded'];
+      const head = ['Seat', 'Passenger', 'ID type', 'ID number', 'Gender', 'Child', 'Phone', 'Booking', 'Status', 'From', 'To', 'Boarded', 'Luggage',
+        ...LUGGAGE_KINDS.map(([k]) => k[0].toUpperCase() + k.slice(1)), 'Luggage note'];
       const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
-      const csv = [head, ...rows.map(r => [r.seat_no, r.passenger_name, r.id_type, r.id_number, r.gender, r.is_child ? 'Y' : '', r.contact_phone, r.ref, r.status, `${r.from_stop}, ${r.from_city}`, `${r.to_stop}, ${r.to_city}`, r.boarded_at ? 'Y' : ''])].map(r => r.map(q).join(',')).join('\r\n');
+      const csv = [head, ...rows.map(r => [r.seat_no, r.passenger_name, r.id_type, r.id_number, r.gender, r.is_child ? 'Y' : '', r.contact_phone, r.ref, r.status, `${r.from_stop}, ${r.from_city}`, `${r.to_stop}, ${r.to_city}`, r.boarded_at ? 'Y' : '',
+        r.luggage.has ? 'Yes' : 'No', ...LUGGAGE_KINDS.map(([k]) => r.luggage.items[k] || ''), r.lug_note || '']),
+        ['TOTAL', `${rows.length} passengers`, '', '', '', '', '', '', '', '', '', '', `${rows.filter(r => r.luggage.has).length} with luggage`, ...LUGGAGE_KINDS.map(([k]) => luggage_totals[k]), '']].map(r => r.map(q).join(',')).join('\r\n');
       res.set({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="manifest-trip-${t.id}-${t.service_date}.csv"` });
       return res.send('﻿' + csv);
     }
     const trip = db.prepare(`SELECT t.*, r.name route_name, b.plate, d.name driver_name, d.licence_no, c.name conductor_name, o.name operator_name FROM trips t JOIN routes r ON r.id=t.route_id
       JOIN buses b ON b.id=t.bus_id JOIN operators o ON o.id=t.operator_id LEFT JOIN staff d ON d.id=t.driver_id LEFT JOIN staff c ON c.id=t.conductor_id WHERE t.id=?`).get(t.id);
-    res.json({ trip: { ...trip, depart_local: `${localDate(trip.depart_at)} ${localTime(trip.depart_at)}` }, passengers: rows });
+    res.json({ trip: { ...trip, depart_local: `${localDate(trip.depart_at)} ${localTime(trip.depart_at)}` }, passengers: rows, luggage_totals });
   });
 
   /* ---------- walk-in / counter sales (same live seat inventory) ---------- */
@@ -266,10 +273,11 @@ export default function operatorRoutes(db) {
     res.json({ group_ref: b.group_ref, bookings: groupBookings(db, b.group_ref).map(x => ticketData(db, x.ref)) });
   });
   r.post('/counter/settle/:group', ...desk, (req, res) => res.json(settleAtCounter(db, req.params.group, req.user)));
-  r.get('/counter/receipt/:ref', ...desk, (req, res) => {
+  /** Everything a thermal printer ticket needs, including the QR code as SVG. */
+  r.get('/counter/receipt/:ref', ...desk, async (req, res) => {
     const t = ticketData(db, req.params.ref);
     if (!t || t.operator_id !== req.operatorId) throw notFound();
-    res.json(t);
+    res.json({ ...t, qr_svg: ['confirmed', 'completed'].includes(t.status) ? await qrSvg(t.ref) : null, printed_by: req.user.name, printed_at: new Date().toISOString() });
   });
 
   /* ---------- pricing ---------- */
