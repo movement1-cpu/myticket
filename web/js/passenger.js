@@ -1,6 +1,7 @@
 import { $, $$, html, raw, esc, api, auth, toast, modal, busy, formData, kwacha, kw0, time, day, dayOf, dateTime, dur, today, plusDays, pill, download } from './core.js';
 import { seatPicker, countdown } from './seatmap.js';
 import { luggageFields, bindLuggage, readLuggage } from './luggage.js';
+import { t, t as tr, getLang } from './i18n.js';
 
 /* ---------- cart (survives reloads during checkout) ---------- */
 const cart = {
@@ -11,19 +12,20 @@ const AMENITY_ICON = { 'Wi-Fi': 'Wi-Fi', AC: 'AC', 'USB Charging': 'USB', Toilet
 
 /* ---------- home / search ---------- */
 export async function home(app) {
-  const cities = await api('/cities');
+  const [cities, langs] = await Promise.all([api('/cities'), api('/languages').catch(() => ({}))]);
   const last = (() => { try { return JSON.parse(localStorage.getItem('mt.lastSearch')); } catch { return null; } })();
   app.innerHTML = html`<div class="page">
     <section class="hero">
-      <h1>Bus tickets across Zambia</h1>
+      <h1>${t('home.title')}</h1>
       ${searchForm(cities, last || { from: 'Lusaka', to: 'Kitwe', date: plusDays(today(), 1) })}
     </section>
     <section class="grid3">
-      <div class="card"><h3>Pay the way you already do</h3><p class="muted" style="margin:0">MTN MoMo, Airtel Money, Zamtel Kwacha, Visa or Mastercard. Or reserve now and pay cash at the station within 30 minutes.</p></div>
-      <div class="card"><h3>Your seat is locked while you pay</h3><p class="muted" style="margin:0">Pick a seat and nobody else can take it for 10 minutes. The map updates live as others book.</p></div>
-      <div class="card"><h3>Ticket by SMS and WhatsApp</h3><p class="muted" style="margin:0">Show the QR code at the gate. Track your bus live and get told if it is delayed.</p></div>
+      <div class="card"><h3>${t('home.pay.t')}</h3><p class="muted" style="margin:0">${t('home.pay.d')}</p></div>
+      <div class="card"><h3>${t('home.lock.t')}</h3><p class="muted" style="margin:0">${t('home.lock.d')}</p></div>
+      <div class="card"><h3>${t('home.sms.t')}</h3><p class="muted" style="margin:0">${t('home.sms.d')}</p></div>
     </section>
-    <section class="card"><h3>Popular routes</h3><div class="chips">${[['Lusaka', 'Kitwe'], ['Lusaka', 'Livingstone'], ['Lusaka', 'Chipata'], ['Kitwe', 'Lusaka'], ['Lusaka', 'Ndola'], ['Kabwe', 'Kitwe']].map(([a, b]) =>
+    ${langs.ussd_code ? html`<div class="notice ok">${t('home.ussd', { code: langs.ussd_code })}</div>` : ''}
+    <section class="card"><h3>${t('home.popular')}</h3><div class="chips">${[['Lusaka', 'Kitwe'], ['Lusaka', 'Livingstone'], ['Lusaka', 'Chipata'], ['Kitwe', 'Lusaka'], ['Lusaka', 'Ndola'], ['Kabwe', 'Kitwe']].map(([a, b]) =>
       html`<a class="chip" href="#/search?from=${a}&to=${b}&date=${plusDays(today(), 1)}">${a} → ${b}</a>`)}</div></section>
   </div>`;
   bindSearch(app);
@@ -32,12 +34,12 @@ export async function home(app) {
 function searchForm(cities, v) {
   const opts = sel => cities.map(c => html`<option ${c === sel ? 'selected' : ''}>${c}</option>`);
   return html`<form id="search" autocomplete="off">
-    <label class="field"><span>From</span><select name="from">${opts(v.from)}</select></label>
+    <label class="field"><span>${t('f.from')}</span><select name="from">${opts(v.from)}</select></label>
     <button type="button" class="swap" id="swap" aria-label="Swap origin and destination">⇄</button>
-    <label class="field"><span>To</span><select name="to">${opts(v.to)}</select></label>
-    <label class="field wide"><span>Travel date</span><input type="date" name="date" min="${today()}" value="${v.date && v.date >= today() ? v.date : plusDays(today(), 1)}" required></label>
-    <label class="field wide"><span>Return (optional)</span><input type="date" name="return_date" min="${today()}" value="${v.return_date || ''}"></label>
-    <button class="btn copper wide">Search buses</button>
+    <label class="field"><span>${t('f.to')}</span><select name="to">${opts(v.to)}</select></label>
+    <label class="field wide"><span>${t('f.date')}</span><input type="date" name="date" min="${today()}" value="${v.date && v.date >= today() ? v.date : plusDays(today(), 1)}" required></label>
+    <label class="field wide"><span>${t('f.return')}</span><input type="date" name="return_date" min="${today()}" value="${v.return_date || ''}"></label>
+    <button class="btn copper wide">${t('f.search')}</button>
   </form>`;
 }
 function bindSearch(root) {
@@ -66,18 +68,18 @@ export async function results(app, params) {
     <section class="hero" style="padding:16px">${searchForm(cities, p)}</section>
     <div class="results">
       <aside class="filters" aria-label="Filters">
-        <div class="card"><span class="label">Departure</span><div class="chips">${chip('window', 'morning', 'Morning 05–12')}${chip('window', 'afternoon', 'Afternoon 12–17')}${chip('window', 'night', 'Evening & night')}</div></div>
-        <div class="card"><span class="label">Bus type</span><div class="chips">${filters.classes.map(c => chip('class', c, c))}</div></div>
-        <div class="card"><span class="label">Bus company</span><div class="chips">${filters.operators.map(o => chip('operator', o.id, o.name))}</div></div>
-        <div class="card"><span class="label">Amenities</span><div class="chips">${filters.amenities.map(a => chip('amenities', a, a))}</div></div>
-        <div class="card"><span class="label">Price (K)</span><div class="row"><input type="number" min="0" placeholder="Min" id="minp" value="${p.min_price || ''}"><input type="number" min="0" placeholder="Max" id="maxp" value="${p.max_price || ''}"></div></div>
+        <div class="card"><span class="label">${t('r.departure')}</span><div class="chips">${chip('window', 'morning', t('r.morning'))}${chip('window', 'afternoon', t('r.afternoon'))}${chip('window', 'night', t('r.night'))}</div></div>
+        <div class="card"><span class="label">${t('r.type')}</span><div class="chips">${filters.classes.map(c => chip('class', c, c))}</div></div>
+        <div class="card"><span class="label">${t('r.company')}</span><div class="chips">${filters.operators.map(o => chip('operator', o.id, o.name))}</div></div>
+        <div class="card"><span class="label">${t('r.amenities')}</span><div class="chips">${filters.amenities.map(a => chip('amenities', a, a))}</div></div>
+        <div class="card"><span class="label">${t('r.price')}</span><div class="row"><input type="number" min="0" placeholder="Min" id="minp" value="${p.min_price || ''}"><input type="number" min="0" placeholder="Max" id="maxp" value="${p.max_price || ''}"></div></div>
       </aside>
       <div class="main">
-        <div class="head"><div class="small muted">Sort by</div>
-          <select id="sort" style="width:auto">${[['depart', 'Departure time'], ['price', 'Lowest fare'], ['rating', 'Best rated'], ['seats', 'Most seats left']].map(([v, l]) => html`<option value="${v}" ${p.sort === v ? 'selected' : ''}>${l}</option>`)}</select></div>
-        ${legSection('Outbound', p.from, p.to, p.date, data.outbound, 0, picked)}
-        ${data.return ? legSection('Return', p.to, p.from, p.return_date, data.return, 1, picked) : ''}
-        <div class="card" id="go" ${data.return ? '' : 'hidden'}><div class="row" style="justify-content:space-between;align-items:center"><span id="gotext" class="muted">Pick an outbound and a return bus.</span><button class="btn copper" id="gobtn" disabled>Choose seats</button></div></div>
+        <div class="head"><div class="small muted">${t('r.sort')}</div>
+          <select id="sort" style="width:auto">${[['depart', t('r.sort.depart')], ['price', t('r.sort.price')], ['rating', t('r.sort.rating')], ['seats', t('r.sort.seats')]].map(([v, l]) => html`<option value="${v}" ${p.sort === v ? 'selected' : ''}>${l}</option>`)}</select></div>
+        ${legSection(t('r.outbound'), p.from, p.to, p.date, data.outbound, 0, picked)}
+        ${data.return ? legSection(t('r.return'), p.to, p.from, p.return_date, data.return, 1, picked) : ''}
+        <div class="card" id="go" ${data.return ? '' : 'hidden'}><div class="row" style="justify-content:space-between;align-items:center"><span id="gotext" class="muted">${t('r.pickboth')}</span><button class="btn copper" id="gobtn" disabled>${t('r.chooseseats')}</button></div></div>
       </div>
     </div>
   </div>`;
@@ -96,7 +98,7 @@ export async function results(app, params) {
     if (data.return) {
       const ok = choice[0] && choice[1];
       $('#gobtn', app).disabled = !ok;
-      $('#gotext', app).textContent = ok ? `${time(choice[0].depart_at)} out, ${time(choice[1].depart_at)} back · from ${kw0(choice[0].fare + choice[1].fare)} per person` : 'Pick an outbound and a return bus.';
+      $('#gotext', app).textContent = ok ? `${time(choice[0].depart_at)} out, ${time(choice[1].depart_at)} back · from ${kw0(choice[0].fare + choice[1].fare)} per person` : t('r.pickboth');
     }
   };
   const start = () => {
@@ -122,7 +124,7 @@ export async function results(app, params) {
 function legSection(title, from, to, date, trips, leg, picked) {
   return html`<section class="page" style="gap:10px" id="leg${leg}">
     <div class="head"><h2>${title}: ${from} → ${to}</h2><span class="muted">${dayOf(date)} · ${trips.length} bus${trips.length === 1 ? '' : 'es'}</span></div>
-    ${trips.length ? trips.map(t => tripCard(t, leg)) : raw('<div class="empty">No buses match. Clear some filters or try another date.</div>')}
+    ${trips.length ? trips.map(t => tripCard(t, leg)) : html`<div class="empty">${t('r.none')}</div>`}
   </section>`;
 }
 function tripCard(t, leg) {
@@ -136,11 +138,11 @@ function tripCard(t, leg) {
     </div>
     <div class="leg">
       <div><div class="t">${time(t.depart_at)}</div><div class="small muted">${t.boarding_points[0].terminal}</div></div>
-      <div class="line">${dur(t.duration_min)}<br><button class="btn ghost sm" data-stops="${t.trip_id}" data-leg="${leg}" type="button">Stops & map</button></div>
+      <div class="line">${dur(t.duration_min)}<br><button class="btn ghost sm" data-stops="${t.trip_id}" data-leg="${leg}" type="button">${tr('r.stops')}</button></div>
       <div style="text-align:right"><div class="t">${time(t.arrive_at)}</div><div class="small muted">${t.dropping_points.at(-1).terminal}</div></div>
     </div>
-    <div class="fare"><b class="num">${kw0(t.fare)}</b><div class="small ${low ? '' : 'muted'}" style="${low ? 'color:var(--bad);font-weight:600' : ''}">${t.seats_left} of ${t.capacity} seats left</div></div>
-    <button class="btn" data-pick="${t.trip_id}" data-leg="${leg}" ${t.seats_left > 0 ? '' : 'disabled'}>${t.seats_left > 0 ? 'Select' : 'Full'}</button>
+    <div class="fare"><b class="num">${kw0(t.fare)}</b><div class="small ${low ? '' : 'muted'}" style="${low ? 'color:var(--bad);font-weight:600' : ''}">${tr('r.left', { n: t.seats_left, c: t.capacity })}</div></div>
+    <button class="btn" data-pick="${t.trip_id}" data-leg="${leg}" ${t.seats_left > 0 ? '' : 'disabled'}>${t.seats_left > 0 ? tr('r.select') : tr('r.full')}</button>
   </article>`;
 }
 function showStops(t) {
@@ -157,19 +159,19 @@ export async function seats(app) {
   const pickers = [];
   const quotes = [];
   app.innerHTML = html`<div class="page">
-    <div class="head"><div><a href="#/search?${c.search.key}" class="small">← Back to results</a><h1>Choose your seats</h1></div>
-      <div class="card" style="padding:8px 12px;gap:0"><span class="label">Seats held for</span><span class="timer" id="timer">--:--</span></div></div>
+    <div class="head"><div><a href="#/search?${c.search.key}" class="small">${t('s.back')}</a><h1>${t('s.title')}</h1></div>
+      <div class="card" style="padding:8px 12px;gap:0"><span class="label">${t('s.held')}</span><span class="timer" id="timer">--:--</span></div></div>
     ${c.legs.map((l, i) => html`<section class="booking" data-leg="${i}">
       <div class="card"><div class="head"><h2>${c.legs.length > 1 ? (i ? 'Return: ' : 'Outbound: ') : ''}${l.trip.boarding_points[0].city} → ${l.trip.dropping_points[0].city}</h2>
         <span class="muted">${day(l.trip.depart_at)} · ${l.trip.operator} · ${l.trip.class}</span></div><div id="map${i}"></div></div>
       <div class="card">
-        <label class="field"><span>Boarding point</span><select id="from${i}">${l.trip.boarding_points.map(s => html`<option value="${s.stop_id}" ${s.stop_id === l.from_stop_id ? 'selected' : ''}>${time(s.time)} · ${s.terminal}, ${s.city}</option>`)}</select></label>
+        <label class="field"><span>${t('s.boarding')}</span><select id="from${i}">${l.trip.boarding_points.map(s => html`<option value="${s.stop_id}" ${s.stop_id === l.from_stop_id ? 'selected' : ''}>${time(s.time)} · ${s.terminal}, ${s.city}</option>`)}</select></label>
         <a class="small" id="fromMap${i}" target="_blank" rel="noopener">Open pick-up point in Google Maps</a>
-        <label class="field"><span>Dropping point</span><select id="to${i}">${l.trip.dropping_points.map(s => html`<option value="${s.stop_id}" ${s.stop_id === l.to_stop_id ? 'selected' : ''}>${time(s.time)} · ${s.terminal}, ${s.city}</option>`)}</select></label>
+        <label class="field"><span>${t('s.dropping')}</span><select id="to${i}">${l.trip.dropping_points.map(s => html`<option value="${s.stop_id}" ${s.stop_id === l.to_stop_id ? 'selected' : ''}>${time(s.time)} · ${s.terminal}, ${s.city}</option>`)}</select></label>
         <div id="sum${i}"></div>
       </div>
     </section>`)}
-    <div class="card"><div class="row" style="justify-content:space-between;align-items:center"><span id="hint" class="muted"></span><button class="btn copper" id="next" disabled>Continue to passenger details</button></div></div>
+    <div class="card"><div class="row" style="justify-content:space-between;align-items:center"><span id="hint" class="muted"></span><button class="btn copper" id="next" disabled>${t('s.continue')}</button></div></div>
   </div>`;
 
   const timer = countdown($('#timer', app), null, () => { toast('Your seat hold expired. Pick your seats again.', true); });
@@ -220,56 +222,72 @@ export async function checkout(app) {
   }
   const saved = c.form || {};
   app.innerHTML = html`<div class="page">
-    <div class="head"><div><a href="#/seats" class="small">← Change seats</a><h1>Passenger details</h1></div>
-      <div class="card" style="padding:8px 12px;gap:0"><span class="label">Seats held for</span><span class="timer" id="timer"></span></div></div>
+    <div class="head"><div><a href="#/seats" class="small">← Change seats</a><h1>${t('c.title')}</h1></div>
+      <div class="card" style="padding:8px 12px;gap:0"><span class="label">${t('s.held')}</span><span class="timer" id="timer"></span></div></div>
     <form id="co" class="page" novalidate>
-      <section class="card"><h3>Travellers</h3><p class="small muted" style="margin:0">Names and ID numbers go on the passenger manifest checked by police and at borders. Bring the same ID. Tell us about luggage for the hold so the crew can plan space.</p>
+      <section class="card"><h3>${t('c.travellers')}</h3><p class="small muted" style="margin:0">Names and ID numbers go on the passenger manifest checked by police and at borders. Bring the same ID. Tell us about luggage for the hold so the crew can plan space.</p>
         ${seats.map((s, i) => html`<div class="paxrow">
           <span class="seatno" title="Seat">${s}${c.legs[1] ? raw(`<br><span class="small">${esc(c.legs[1].hold.seats[i])}</span>`) : ''}</span>
-          <label class="field"><span>Full name</span><input name="name${i}" value="${saved['name' + i] ?? (i === 0 && u?.role === 'passenger' ? u.name : '')}" required></label>
-          <label class="field"><span>ID type</span><select name="idt${i}">${['NRC', 'Passport', 'Other'].map(t => html`<option ${saved['idt' + i] === t ? 'selected' : ''}>${t}</option>`)}</select></label>
-          <label class="field"><span>ID number</span><input name="idn${i}" value="${saved['idn' + i] || ''}" placeholder="123456/78/1" required></label>
-          <label class="field"><span>Gender${female.has(i) ? ' (women-only seat)' : ''}</span><select name="g${i}">${[['F', 'Female'], ['M', 'Male'], ['X', 'Prefer not to say']].map(([v, l]) => html`<option value="${v}" ${(saved['g' + i] || (female.has(i) ? 'F' : 'M')) === v ? 'selected' : ''}>${l}</option>`)}</select></label>
-          <label class="chip" style="align-self:center"><input type="checkbox" name="child${i}" ${saved['child' + i] ? 'checked' : ''}>Child under 12</label>
+          <label class="field"><span>${t('c.name')}</span><input name="name${i}" value="${saved['name' + i] ?? (i === 0 && u?.role === 'passenger' ? u.name : '')}" required></label>
+          <label class="field"><span>${t('c.idtype')}</span><select name="idt${i}">${['NRC', 'Passport', 'Other'].map(t => html`<option ${saved['idt' + i] === t ? 'selected' : ''}>${t}</option>`)}</select></label>
+          <label class="field"><span>${t('c.idnum')}</span><input name="idn${i}" value="${saved['idn' + i] || ''}" placeholder="123456/78/1" required></label>
+          <label class="field"><span>${t('c.gender')}${female.has(i) ? ' ♀' : ''}</span><select name="g${i}">${[['F', t('c.female')], ['M', t('c.male')], ['X', t('c.other')]].map(([v, l]) => html`<option value="${v}" ${(saved['g' + i] || (female.has(i) ? 'F' : 'M')) === v ? 'selected' : ''}>${l}</option>`)}</select></label>
+          <label class="chip" style="align-self:center"><input type="checkbox" name="child${i}" ${saved['child' + i] ? 'checked' : ''}>${t('c.child')}</label>
         </div>${luggageFields(i, saved)}`)}
       </section>
-      <section class="card"><h3>Contact for tickets and alerts</h3>
+      <section class="card"><h3>${t('c.contact')}</h3>
         <div class="grid3">
-          <label class="field"><span>Name</span><input name="cname" value="${saved.cname ?? (u?.role === 'passenger' ? u.name : '')}" required></label>
-          <label class="field"><span>Mobile number (SMS + WhatsApp)</span><input name="cphone" inputmode="tel" value="${saved.cphone ?? (u?.role === 'passenger' ? '0' + u.phone.slice(3) : '')}" placeholder="0971 234 567" required></label>
-          <label class="field"><span>Email (optional)</span><input name="cemail" type="email" value="${saved.cemail ?? (u?.email || '')}"></label>
+          <label class="field"><span>${t('c.cname')}</span><input name="cname" value="${saved.cname ?? (u?.role === 'passenger' ? u.name : '')}" required></label>
+          <label class="field"><span>${t('c.cphone')}</span><input name="cphone" inputmode="tel" value="${saved.cphone ?? (u?.role === 'passenger' ? '0' + u.phone.slice(3) : '')}" placeholder="0971 234 567" required></label>
+          <label class="field"><span>${t('c.email')}</span><input name="cemail" type="email" value="${saved.cemail ?? (u?.email || '')}"></label>
         </div>
         ${u ? '' : raw('<p class="small muted" style="margin:0">Booking as a guest. <a href="#/login" id="signin">Sign in</a> to keep the trip in My trips.</p>')}
       </section>
-      <section class="card"><h3>Payment</h3>
+      <section class="card"><h3>${t('c.payment')}</h3>
         <div class="paymethods">
           ${[['mtn', 'MTN MoMo', 'Approve on your phone'], ['airtel', 'Airtel Money', 'Approve on your phone'], ['zamtel', 'Zamtel Kwacha', 'Approve on your phone'], ['card', 'Visa / Mastercard', 'Secure card page'], ['station', 'Pay at the station', 'Seats held 30 minutes']]
             .map(([v, l, d]) => html`<label class="paymethod"><input type="radio" name="pm" value="${v}" ${(saved.pm || 'mtn') === v ? 'checked' : ''}><b>${l}</b><span class="small muted">${d}</span></label>`)}
         </div>
-        <div class="row"><label class="field" style="max-width:240px"><span>Promo code</span><input name="promo" value="${saved.promo || ''}" style="text-transform:uppercase"></label><button type="button" class="btn ghost" id="applyPromo">Apply</button></div>
+        <div class="row"><label class="field" style="max-width:240px"><span>${t('c.promo')}</span><input name="promo" value="${saved.promo || ''}" style="text-transform:uppercase"></label><button type="button" class="btn ghost" id="applyPromo">${t('c.apply')}</button></div>
+        <label class="chip" id="ptslabel" style="justify-self:start" hidden><input type="checkbox" id="usepts" ${saved.usePoints ? 'checked' : ''}><span id="ptstext"></span></label>
         <div id="price"></div>
       </section>
-      <div class="row" style="justify-content:flex-end"><button class="btn copper" id="book">Confirm booking</button></div>
+      <div class="row" style="justify-content:flex-end"><button class="btn copper" id="book">${t('c.confirm')}</button></div>
     </form>
   </div>`;
   const f = $('#co', app);
   const timer = countdown($('#timer', app), c.legs.map(l => l.hold.expires_at).sort()[0], () => { toast('Your seat hold expired. Pick your seats again.', true); location.hash = '#/seats'; });
   const passengers = (i, v) => seats.map((_, k) => ({ seat_no: c.legs[i].hold.seats[k], name: v['name' + k], id_type: v['idt' + k], id_number: v['idn' + k], gender: v['g' + k], is_child: !!v['child' + k], luggage: readLuggage(v, k) }));
   let promoOk = '';
+  let usePoints = !!saved.usePoints, ptsInfo = null, ptsToUse = 0;
+  if (u?.role === 'passenger') ptsInfo = await api('/my/points').catch(() => null);
   const price = async () => {
     const v = formData(f);
-    c.form = v; cart.set(c);
+    c.form = { ...v, usePoints }; cart.set(c);
     try {
       const qs = await Promise.all(c.legs.map((l, i) => api('/quote', { method: 'POST', body: { trip_id: l.trip.trip_id, from_stop_id: l.from_stop_id, to_stop_id: l.to_stop_id, passengers: passengers(i, v), promo_code: promoOk || undefined } })));
-      const fare = qs.reduce((a, q) => a + q.fare_total, 0), disc = qs.reduce((a, q) => a + q.discount, 0), fee = qs.reduce((a, q) => a + q.booking_fee, 0);
-      $('#price', app).innerHTML = html`<div class="sumrow"><span>Fares${qs.some(q => q.child_pct && passengers(0, v).some(p => p.is_child)) ? ` (children ${qs[0].child_pct}% off)` : ''}</span><span class="num">${kwacha(fare)}</span></div>
+      const fare = qs.reduce((a, q) => a + q.fare_total, 0), disc = qs.reduce((a, q) => a + q.discount, 0), fee = qs.reduce((a, q) => a + q.booking_fee, 0), lug = qs.reduce((a, q) => a + q.luggage_fee, 0);
+      // Same rule as the server: points pay at most max_pct of each leg's fare.
+      let left = ptsInfo?.balance || 0, possible = 0;
+      if (ptsInfo?.point_value) for (const q of qs) { const n = Math.min(left, Math.floor(((q.fare_total - q.discount) * ptsInfo.max_pct / 100) / ptsInfo.point_value)); possible += n; left -= n; }
+      ptsToUse = usePoints ? possible : 0;
+      const ptsVal = Math.round(ptsToUse * (ptsInfo?.point_value || 0) * 100) / 100;
+      const r = qs[0].luggage_rates;
+      $('#price', app).innerHTML = html`<div class="sumrow"><span>${t('c.fares')}${qs.some(q => q.child_pct && passengers(0, v).some(p => p.is_child)) ? ` (−${qs[0].child_pct}% 👶)` : ''}</span><span class="num">${kwacha(fare)}</span></div>
         ${disc ? html`<div class="sumrow" style="color:var(--ok)"><span>Promo ${promoOk}</span><span class="num">−${kwacha(disc)}</span></div>` : ''}
-        <div class="sumrow"><span>Booking fee</span><span class="num">${kwacha(fee)}</span></div>
-        <div class="sumrow total"><span>Total</span><span class="num">${kwacha(fare - disc + fee)}</span></div>`;
+        ${lug ? html`<div class="sumrow"><span>${t('c.luggage')} <span class="small muted">(${r.free_bags ? `${r.free_bags} bag free per person; ` : ''}${['sacks', 'crates', 'containers', 'boxes'].filter(k => r[k]).map(k => `${k} K${r[k]}`).join(', ')})</span></span><span class="num">${kwacha(lug)}</span></div>` : ''}
+        ${ptsToUse ? html`<div class="sumrow" style="color:var(--ok)"><span>${t('c.pointsline')} (${ptsToUse})</span><span class="num">−${kwacha(ptsVal)}</span></div>` : ''}
+        <div class="sumrow"><span>${t('c.fee')}</span><span class="num">${kwacha(fee)}</span></div>
+        <div class="sumrow total"><span>${t('c.total')}</span><span class="num">${kwacha(fare - disc + lug + fee - ptsVal)}</span></div>`;
+      $('#ptslabel', app).hidden = !possible;
+      $('#ptstext', app).textContent = possible ? t('c.points', { p: possible, v: kwacha(possible * ptsInfo.point_value) }) : '';
     } catch (e) { $('#price', app).innerHTML = html`<div class="notice bad">${e.message}</div>`; if (promoOk) promoOk = ''; }
   };
-  bindLuggage(f);
-  f.addEventListener('change', e => { if (!e.target.closest('.lug')) price(); });
+  $('#usepts', app).addEventListener('change', e => { usePoints = e.target.checked; price(); });
+  let timerQ = null;
+  const reprice = () => { clearTimeout(timerQ); timerQ = setTimeout(price, 250); };
+  bindLuggage(f, reprice);
+  f.addEventListener('change', e => { if (e.target.id !== 'usepts') reprice(); });
   $('#applyPromo', app).addEventListener('click', () => { promoOk = f.promo.value.trim().toUpperCase(); price().then(() => promoOk && toast(`Promo ${promoOk} checked.`)); });
   $('#signin', app)?.addEventListener('click', () => sessionStorage.setItem('mt.next', '#/checkout'));
   f.addEventListener('submit', e => {
@@ -278,7 +296,7 @@ export async function checkout(app) {
     busy($('#book', app), async () => {
       const r = await api('/bookings', { method: 'POST', body: {
         legs: c.legs.map((l, i) => ({ trip_id: l.trip.trip_id, hold_token: l.hold.token, from_stop_id: l.from_stop_id, to_stop_id: l.to_stop_id, passengers: passengers(i, v) })),
-        contact: { name: v.cname, phone: v.cphone, email: v.cemail }, promo_code: v.promo || undefined, payment_method: v.pm } });
+        contact: { name: v.cname, phone: v.cphone, email: v.cemail }, promo_code: v.promo || undefined, payment_method: v.pm, redeem_points: ptsToUse || undefined, lang: getLang() } });
       cart.set(null);
       try { sessionStorage.setItem('mt.pay.' + r.group_ref, JSON.stringify({ method: v.pm, phone: v.cphone })); } catch {}
       location.hash = '#/pay/' + r.group_ref;
@@ -300,9 +318,9 @@ export async function pay(app, group) {
     const lastFail = g.payments.find(p => p.status === 'failed');
     if (st === 'confirmed' || st === 'completed') {
       app.innerHTML = html`<div class="page" style="max-width:720px;margin:0 auto">
-        <div class="notice ok"><h2>Booking confirmed</h2><p style="margin:4px 0 0">Your e-ticket is on its way by SMS and WhatsApp${pref.email ? ' and email' : ''}. Show the QR code at the gate.</p></div>
+        <div class="notice ok"><h2>${t('p.confirmed')}</h2><p style="margin:4px 0 0">Your e-ticket is on its way by SMS and WhatsApp${pref.email ? ' and email' : ''}. Show the QR code at the gate.</p></div>
         ${g.bookings.map(b => html`<div class="card"><div class="row" style="justify-content:space-between;align-items:center"><div><span class="label">Booking</span><div class="mono" style="font-size:18px">${b.ref}</div></div>
-          <a class="btn" href="${b.ticket}" target="_blank" rel="noopener">Open ticket & QR</a></div></div>`)}
+          <a class="btn" href="${b.ticket}" target="_blank" rel="noopener">${t('p.open')}</a></div></div>`)}
         <div class="row">${auth.user ? raw('<a class="btn ghost" href="#/trips">Go to My trips</a>') : raw('<a class="btn ghost" href="#/register">Create an account to manage this trip</a>')}<a class="btn ghost" href="#/">Book another trip</a></div>
       </div>`;
       return true;
@@ -317,7 +335,7 @@ export async function pay(app, group) {
       <div class="card"><span class="label">Booking reference${g.bookings.length > 1 ? 's' : ''}</span><div class="mono" style="font-size:18px">${g.bookings.map(b => b.ref).join(' + ')}</div></div>
       ${st === 'reserved' ? html`<div class="notice"><b>Pay cash at the bus company counter</b> before the timer runs out and give them reference <span class="mono">${g.bookings[0].ref}</span>. Or pay now by mobile money or card below.</div>` : ''}
       ${lastFail && !pending ? html`<div class="notice bad">Payment failed: ${lastFail.failure_reason}. Try again or use another method.</div>` : ''}
-      ${pending ? html`<div class="card" style="justify-items:center;text-align:center"><span class="spinner"></span><h3>Check your phone</h3>
+      ${pending ? html`<div class="card" style="justify-items:center;text-align:center"><span class="spinner"></span><h3>${t('p.phone')}</h3>
         <p class="muted" style="margin:0">${pending.provider === 'card' ? 'Complete the payment on the card page.' : `Enter your ${pending.provider.toUpperCase()} PIN on the prompt to approve ${kwacha(pending.amount)}.`} This page updates by itself.</p></div>`
       : html`<form class="card" id="pf">
         <div class="paymethods">${[['mtn', 'MTN MoMo'], ['airtel', 'Airtel Money'], ['zamtel', 'Zamtel Kwacha'], ['card', 'Visa / Mastercard']].map(([v, l]) =>
@@ -380,12 +398,14 @@ export function find(app) {
 /* ---------- my trips ---------- */
 export async function myTrips(app) {
   if (!auth.user) { sessionStorage.setItem('mt.next', '#/trips'); location.hash = '#/login'; return; }
-  const [list, disputes] = await Promise.all([api('/my/bookings'), api('/my/disputes')]);
+  const [list, disputes, pts] = await Promise.all([api('/my/bookings'), api('/my/disputes'), api('/my/points').catch(() => null)]);
   const up = list.filter(b => b.upcoming), past = list.filter(b => !b.upcoming);
   app.innerHTML = html`<div class="page">
-    <div class="head"><h1>My trips</h1><a class="btn" href="#/">Book a trip</a></div>
-    <h2>Upcoming</h2>${up.length ? up.map(ticketCard) : raw('<div class="empty">No upcoming trips.</div>')}
-    <h2>Past and cancelled</h2>${past.length ? past.map(ticketCard) : raw('<div class="empty">Nothing here yet.</div>')}
+    <div class="head"><h1>${t('m.title')}</h1><a class="btn" href="#/">${t('m.book')}</a></div>
+    ${pts ? html`<details class="card"><summary><b>${t('m.points')}: ${pts.balance}</b> <span class="small muted">· ${t('m.points.d', { b: pts.balance, v: kwacha(pts.balance * pts.point_value), k: pts.points_per_kwacha ? Math.round(1 / pts.points_per_kwacha) : '—' })}</span></summary>
+      ${pts.history.length ? html`<div class="tablewrap"><table><tbody>${pts.history.map(h => html`<tr><td class="small">${h.created_at.slice(0, 10)}</td><td>${h.note || h.kind}</td><td class="r num" style="color:${h.points < 0 ? 'var(--bad)' : 'var(--ok)'}">${h.points > 0 ? '+' : ''}${h.points}</td></tr>`)}</tbody></table></div>` : ''}</details>` : ''}
+    <h2>${t('m.upcoming')}</h2>${up.length ? up.map(ticketCard) : raw('<div class="empty">No upcoming trips.</div>')}
+    <h2>${t('m.past')}</h2>${past.length ? past.map(ticketCard) : raw('<div class="empty">Nothing here yet.</div>')}
     <h2>Help requests</h2>
     ${disputes.length ? html`<div class="tablewrap"><table><thead><tr><th>#</th><th>Booking</th><th>Issue</th><th>Status</th><th>Answer</th></tr></thead><tbody>${disputes.map(d => html`<tr><td>${d.id}</td><td class="mono">${d.ref || '—'}</td><td>${d.description}</td><td>${pill(d.status)}</td><td>${d.resolution || ''}${d.refund_amount ? ` Refund ${kwacha(d.refund_amount)}` : ''}</td></tr>`)}</tbody></table></div>` : raw('<div class="empty">No help requests.</div>')}
     <div><button class="btn ghost" data-act="dispute">Report a problem</button></div>
@@ -415,11 +435,11 @@ function ticketCard(t) {
       ${t.trip_status === 'delayed' ? html`<div class="notice">Running about ${t.delay_min} minutes late.</div>` : ''}
       <div class="row">
         ${['confirmed', 'completed'].includes(t.status) ? html`<a class="btn sm" href="${t.url}" target="_blank" rel="noopener">Ticket & QR</a><button class="btn ghost sm" data-act="pdf" data-ref="${t.ref}">Download PDF</button>` : ''}
-        ${t.status === 'confirmed' ? html`<a class="btn ghost sm" href="#/track/${t.trip_id}">Track bus</a>` : ''}
-        ${canChange ? html`<a class="btn ghost sm" href="#/reschedule/${t.ref}">Change date or time</a>` : ''}
-        ${['confirmed', 'reserved', 'pending_payment'].includes(t.status) ? html`<button class="btn danger sm" data-act="cancel" data-ref="${t.ref}">Cancel</button>` : ''}
+        ${t.status === 'confirmed' ? html`<a class="btn ghost sm" href="#/track/${t.trip_id}">${tr('m.track')}</a>` : ''}
+        ${canChange ? html`<a class="btn ghost sm" href="#/reschedule/${t.ref}">${tr('m.change')}</a>` : ''}
+        ${['confirmed', 'reserved', 'pending_payment'].includes(t.status) ? html`<button class="btn danger sm" data-act="cancel" data-ref="${t.ref}">${tr('m.cancel')}</button>` : ''}
         ${['pending_payment', 'reserved'].includes(t.status) ? html`<a class="btn copper sm" href="#/pay/${t.group_ref}">Pay now</a>` : ''}
-        ${t.status === 'completed' && !t.review ? html`<button class="btn copper sm" data-act="rate" data-ref="${t.ref}">Rate this trip</button>` : ''}
+        ${t.status === 'completed' && !t.review ? html`<button class="btn copper sm" data-act="rate" data-ref="${t.ref}">${tr('m.rate')}</button>` : ''}
         ${t.review ? html`<span class="small muted">You rated: cleanliness ${t.review.cleanliness}★, punctuality ${t.review.punctuality}★, driver ${t.review.driver}★</span>` : ''}
       </div>
     </div>

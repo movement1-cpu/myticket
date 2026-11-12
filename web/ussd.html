@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>USSD simulator — MyTicket</title>
+  <meta name="robots" content="noindex">
+  <style>
+    :root { color-scheme: light dark; }
+    body { margin: 0; font: 15px/1.4 system-ui, sans-serif; background: #e9ebe6; color: #1b1d1a; display: grid; place-items: center; min-height: 100vh; padding: 16px; box-sizing: border-box; }
+    .phone { width: 300px; max-width: 100%; background: #1b1d1a; border-radius: 28px; padding: 18px; box-shadow: 0 10px 30px rgba(0,0,0,.3); }
+    .screen { background: #cfe3c4; color: #102010; font: 600 14px/1.35 "Courier New", monospace; border-radius: 8px; padding: 12px; min-height: 220px; white-space: pre-wrap; }
+    .screen .end { margin-top: 8px; font-weight: 400; opacity: .7; }
+    input, button { font: inherit; width: 100%; box-sizing: border-box; padding: 9px; border-radius: 8px; border: 0; margin-top: 8px; }
+    button { background: #146b3a; color: #fff; font-weight: 700; cursor: pointer; }
+    button.ghost { background: #3a3d37; }
+    .note { max-width: 300px; font-size: 12.5px; color: #4a4f46; margin-top: 12px; }
+    label { color: #cfd3cb; font-size: 12px; display: block; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <div>
+    <div class="phone">
+      <label for="msisdn">Phone number</label>
+      <input id="msisdn" value="0961234567" inputmode="tel">
+      <div class="screen" id="screen" aria-live="polite">Press Dial to start.</div>
+      <input id="reply" placeholder="Reply" autocomplete="off" disabled>
+      <button id="send" disabled>Send</button>
+      <button id="dial" class="ghost">Dial *384*123#</button>
+    </div>
+    <p class="note">Development simulator. It sends the same requests as the Africa's Talking USSD gateway to <code>/api/ussd</code>. Payments use the sandbox: numbers ending 0000 fail. Not available in production.</p>
+  </div>
+  <script src="/js/ussd-sim.js"></script>
+</body>
+</html>

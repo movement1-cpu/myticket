@@ -8,7 +8,8 @@ import { requireRole, requireApprovedOperator, hashPassword } from '../auth.js';
 import { bad, notFound, conflict, forbidden, required, normPhone, isDate, isTime, ref, money, localDate, localTime, addDays } from '../util.js';
 import { ensureTrips, routeStops } from '../services/trips.js';
 import { createBookings, settleAtCounter, cancelBooking, groupBookings } from '../services/bookings.js';
-import { operatorTerms } from '../services/pricing.js';
+import { operatorTerms, DEFAULT_LUGGAGE_FEES } from '../services/pricing.js';
+import { dueItems, tripBlockers } from '../services/maintenance.js';
 import { notifyContact } from '../services/notify.js';
 import { ticketData, qrSvg } from '../services/tickets.js';
 import { luggageOf, LUGGAGE_KINDS } from '../services/luggage.js';
@@ -29,6 +30,18 @@ export function saveUpload(file) {
   const stored = crypto.randomUUID() + MIME[file.mime];
   fs.writeFileSync(path.join(config.uploadDir, stored), buf);
   return { stored, size: buf.length, filename: String(file.filename || 'upload').slice(0, 200) };
+}
+
+/** Validate an operator's luggage price list. Returns JSON or null (unchanged). */
+function luggageFeesBody(v) {
+  if (v == null) return null;
+  const out = {};
+  for (const k of Object.keys(DEFAULT_LUGGAGE_FEES)) {
+    const n = Number(v[k] ?? DEFAULT_LUGGAGE_FEES[k]);
+    if (!(n >= 0 && n <= (k === 'free_bags' ? 10 : 1000))) throw bad(k === 'free_bags' ? 'Free bags per passenger must be 0–10.' : `Luggage price for ${k} must be between K0 and K1000.`);
+    out[k] = k === 'free_bags' ? Math.floor(n) : Math.round(n * 100) / 100;
+  }
+  return JSON.stringify(out);
 }
 
 export default function operatorRoutes(db) {
@@ -57,9 +70,9 @@ export default function operatorRoutes(db) {
     }
     db.prepare(`UPDATE operators SET contact_phone = COALESCE(?, contact_phone), contact_email = COALESCE(?, contact_email), bank_name = COALESCE(?, bank_name),
       bank_account = COALESCE(?, bank_account), bank_branch = COALESCE(?, bank_branch), pacra_no = COALESCE(?, pacra_no), tpin = COALESCE(?, tpin),
-      refund_policy = COALESCE(?, refund_policy), reschedule_fee = COALESCE(?, reschedule_fee) WHERE id = ?`)
+      refund_policy = COALESCE(?, refund_policy), reschedule_fee = COALESCE(?, reschedule_fee), luggage_fees = COALESCE(?, luggage_fees) WHERE id = ?`)
       .run(b.contact_phone ?? null, b.contact_email ?? null, b.bank_name ?? null, b.bank_account ?? null, b.bank_branch ?? null, b.pacra_no ?? null, b.tpin ?? null,
-        b.refund_policy ? JSON.stringify([...b.refund_policy].sort((x, y) => y.hours - x.hours)) : null, b.reschedule_fee ?? null, req.operatorId);
+        b.refund_policy ? JSON.stringify([...b.refund_policy].sort((x, y) => y.hours - x.hours)) : null, b.reschedule_fee ?? null, luggageFeesBody(b.luggage_fees), req.operatorId);
     audit(req, 'update', 'operator', req.operatorId);
     res.json({ ok: true });
   });
@@ -70,6 +83,45 @@ export default function operatorRoutes(db) {
     const d = db.prepare(`INSERT INTO documents (operator_id, owner_type, owner_id, kind, filename, stored_name, mime, size, expires_on) VALUES (?,?,?,?,?,?,?,?,?) RETURNING id`)
       .get(req.operatorId, 'operator', req.operatorId, kind, f.filename, f.stored, req.body.file.mime, f.size, isDate(req.body.expires_on) ? req.body.expires_on : null);
     res.status(201).json(d);
+  });
+
+  /* ---------- maintenance & compliance ---------- */
+  r.get('/operator/maintenance', ...owner, (req, res) => {
+    const buses = db.prepare(`SELECT id, plate, class, status, odometer_km, service_interval_km, last_service_km, last_service_date, fitness_expiry, insurance_expiry, road_tax_expiry
+      FROM buses WHERE operator_id = ? AND status != 'retired' ORDER BY plate`).all(req.operatorId)
+      .map(b => ({ ...b, km_to_service: Math.round(b.service_interval_km - (b.odometer_km - b.last_service_km)) }));
+    const drivers = db.prepare("SELECT id, name, licence_no, licence_expiry FROM staff WHERE operator_id = ? AND role = 'driver' AND active = 1 ORDER BY name").all(req.operatorId);
+    const log = db.prepare(`SELECT m.*, b.plate FROM maintenance_log m JOIN buses b ON b.id = m.bus_id WHERE m.operator_id = ? ORDER BY m.done_on DESC, m.id DESC LIMIT 100`).all(req.operatorId);
+    res.json({ due: dueItems(db, req.operatorId), buses, drivers, log });
+  });
+  r.put('/operator/buses/:id/compliance', ...owner, (req, res) => {
+    const b = mine('buses', req.params.id, req.operatorId);
+    const d = k => { const v = req.body[k]; if (v === undefined) return b[k]; if (v && !isDate(v)) throw bad('Dates must be YYYY-MM-DD.'); return v || null; };
+    const interval = req.body.service_interval_km === undefined ? b.service_interval_km : Number(req.body.service_interval_km);
+    if (!(interval >= 1000 && interval <= 100000)) throw bad('Service interval should be between 1,000 and 100,000 km.');
+    const odo = req.body.odometer_km === undefined ? b.odometer_km : Number(req.body.odometer_km);
+    if (!(odo >= 0)) throw bad('Enter the odometer reading in km.');
+    db.prepare('UPDATE buses SET fitness_expiry = ?, insurance_expiry = ?, road_tax_expiry = ?, service_interval_km = ?, odometer_km = ? WHERE id = ?')
+      .run(d('fitness_expiry'), d('insurance_expiry'), d('road_tax_expiry'), interval, odo, b.id);
+    audit(req, 'compliance', 'bus', b.id, JSON.stringify(req.body));
+    res.json({ ok: true });
+  });
+  r.post('/operator/maintenance', ...owner, (req, res) => {
+    required(req.body, ['bus_id', 'kind', 'done_on']);
+    const b = mine('buses', req.body.bus_id, req.operatorId);
+    if (!['service', 'repair', 'tyres', 'inspection', 'other'].includes(req.body.kind)) throw bad('Choose what was done.');
+    if (!isDate(req.body.done_on) || req.body.done_on > localDate()) throw bad('Enter the date the work was done (not in the future).');
+    const km = req.body.odometer_km === undefined || req.body.odometer_km === '' ? b.odometer_km : Number(req.body.odometer_km);
+    if (!(km >= 0)) throw bad('Enter the odometer reading in km.');
+    const row = tx(db, () => {
+      const m = db.prepare('INSERT INTO maintenance_log (operator_id, bus_id, done_on, odometer_km, kind, cost, notes, created_by) VALUES (?,?,?,?,?,?,?,?) RETURNING *')
+        .get(req.operatorId, b.id, req.body.done_on, km, req.body.kind, req.body.cost ? Number(req.body.cost) : null, String(req.body.notes || '').slice(0, 500) || null, req.user.id);
+      db.prepare('UPDATE buses SET odometer_km = MAX(odometer_km, ?) WHERE id = ?').run(km, b.id);
+      if (req.body.kind === 'service') db.prepare('UPDATE buses SET last_service_km = ?, last_service_date = ? WHERE id = ?').run(km, req.body.done_on, b.id);
+      if (req.body.kind === 'inspection' && isDate(req.body.fitness_expiry)) db.prepare('UPDATE buses SET fitness_expiry = ? WHERE id = ?').run(req.body.fitness_expiry, b.id);
+      return m;
+    });
+    res.status(201).json(row);
   });
 
   /* ---------- staff ---------- */
@@ -96,7 +148,9 @@ export default function operatorRoutes(db) {
   r.put('/operator/staff/:id', ...owner, (req, res) => {
     const s = mine('staff', req.params.id, req.operatorId);
     const active = req.body.active === undefined ? s.active : req.body.active ? 1 : 0;
-    db.prepare('UPDATE staff SET name = ?, licence_no = ?, active = ? WHERE id = ?').run(req.body.name || s.name, req.body.licence_no ?? s.licence_no, active, s.id);
+    if (req.body.licence_expiry && !isDate(req.body.licence_expiry)) throw bad('Licence expiry must be a date.');
+    db.prepare('UPDATE staff SET name = ?, licence_no = ?, active = ?, licence_expiry = ? WHERE id = ?')
+      .run(req.body.name || s.name, req.body.licence_no ?? s.licence_no, active, req.body.licence_expiry === undefined ? s.licence_expiry : (req.body.licence_expiry || null), s.id);
     if (s.user_id) db.prepare('UPDATE users SET active = ? WHERE id = ?').run(active, s.user_id);
     res.json({ ok: true });
   });
@@ -224,7 +278,7 @@ export default function operatorRoutes(db) {
       FROM trips t JOIN routes r ON r.id = t.route_id JOIN buses b ON b.id = t.bus_id JOIN layouts l ON l.id = b.layout_id
       LEFT JOIN staff d ON d.id = t.driver_id LEFT JOIN staff c ON c.id = t.conductor_id
       WHERE t.operator_id = ? AND t.service_date = ? ORDER BY t.depart_at`).all(req.operatorId, date);
-    res.json(rows.map(t => ({ ...t, depart_local: localTime(t.depart_at) })));
+    res.json(rows.map(t => ({ ...t, depart_local: localTime(t.depart_at), blockers: tripBlockers(db, t) })));
   });
   r.put('/operator/trips/:id/crew', ...ownerOps, (req, res) => {
     const t = mine('trips', req.params.id, req.operatorId);
@@ -365,7 +419,7 @@ export default function operatorRoutes(db) {
 
 /**
  * Operator balance (kwacha).
- *   earned    = completed trips: fare − promo discount − platform commission
+ *   earned    = completed trips: fare − promo discount − platform commission + luggage charges
  *             + cancelled paid bookings: what the operator keeps after the refund
  *   pending   = confirmed bookings on trips that have not run yet (withdrawable once completed)
  *   available = earned − withdrawals requested or paid
@@ -373,9 +427,9 @@ export default function operatorRoutes(db) {
  * counts the new money, so the fare is never counted twice.
  */
 export function balance(db, operatorId) {
-  const sum = status => db.prepare(`SELECT COALESCE(SUM(fare_total - discount - commission), 0) v FROM bookings WHERE operator_id = ? AND status = ?`).get(operatorId, status).v;
-  const kept = db.prepare(`SELECT COALESCE(SUM(MAX(0, b.fare_total - b.discount - b.commission
-      - MIN(b.fare_total - b.discount, COALESCE((SELECT SUM(r.amount) FROM refunds r WHERE r.booking_id = b.id), 0)))), 0) v
+  const sum = status => db.prepare(`SELECT COALESCE(SUM(fare_total - discount - commission + luggage_fee), 0) v FROM bookings WHERE operator_id = ? AND status = ?`).get(operatorId, status).v;
+  const kept = db.prepare(`SELECT COALESCE(SUM(MAX(0, b.fare_total - b.discount - b.commission + b.luggage_fee
+      - MIN(b.fare_total - b.discount + b.luggage_fee, COALESCE((SELECT SUM(r.amount) FROM refunds r WHERE r.booking_id = b.id), 0)))), 0) v
     FROM bookings b WHERE b.operator_id = ? AND b.status = 'cancelled' AND b.confirmed_at IS NOT NULL`).get(operatorId).v;
   const withdrawn = db.prepare("SELECT COALESCE(SUM(amount), 0) v FROM settlements WHERE operator_id = ? AND status IN ('requested','paid')").get(operatorId).v;
   const earned = sum('completed') + kept;

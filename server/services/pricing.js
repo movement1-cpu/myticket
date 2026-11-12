@@ -1,14 +1,18 @@
 import { setting } from '../db.js';
 import { money, bad, localDate } from '../util.js';
 import { segmentFare } from './trips.js';
+import { normLuggage, LUGGAGE_KINDS } from './luggage.js';
+
+export const DEFAULT_LUGGAGE_FEES = { bags: 0, sacks: 0, containers: 0, boxes: 0, crates: 0, other: 0, free_bags: 1 };
 
 export function operatorTerms(db, operatorId) {
-  const o = db.prepare('SELECT commission_pct, booking_fee, refund_policy, reschedule_fee FROM operators WHERE id = ?').get(operatorId);
+  const o = db.prepare('SELECT commission_pct, booking_fee, refund_policy, reschedule_fee, luggage_fees FROM operators WHERE id = ?').get(operatorId);
   return {
     commissionPct: o?.commission_pct ?? Number(setting(db, 'commission_pct')),
     bookingFee: o?.booking_fee ?? Number(setting(db, 'booking_fee')),
     refundPolicy: JSON.parse(o?.refund_policy || setting(db, 'refund_policy')),
     rescheduleFee: o?.reschedule_fee ?? 20,
+    luggageFees: { ...DEFAULT_LUGGAGE_FEES, ...JSON.parse(o?.luggage_fees || '{}') },
   };
 }
 
@@ -30,6 +34,8 @@ export function findPromo(db, code, operatorId) {
  *   discount  = promo% of fare total
  *   fee       = flat platform booking fee per leg (operator override or platform default)
  *   commission= platform % of (fare total − discount), deducted from the operator's payout
+ *   luggage   = per item, set by the operator (first `free_bags` bags per passenger free); goes to the
+ *               operator in full, no commission
  */
 export function priceLeg(db, { trip, fromStop, toStop, passengers, promo }) {
   const base = segmentFare(trip, fromStop, toStop);
@@ -43,11 +49,22 @@ export function priceLeg(db, { trip, fromStop, toStop, passengers, promo }) {
   const discount = promo ? money(fareTotal * promo.pct / 100) : 0;
   const terms = operatorTerms(db, trip.operator_id);
   const commission = money((fareTotal - discount) * terms.commissionPct / 100);
+  const luggageFees = passengers.map((p, i) => luggageCharge(terms.luggageFees, Array.isArray(p._lug) ? p._lug : normLuggage(p.luggage, `passenger ${i + 1}`)));
+  const luggageFee = money(luggageFees.reduce((a, b) => a + b, 0));
   return {
     base, peak_pct: peak, child_pct: child, adult_fare: adultFare, seat_fares: seatFares,
     fare_total: fareTotal, discount, booking_fee: terms.bookingFee, commission,
-    total: money(fareTotal - discount + terms.bookingFee),
+    luggage_fee: luggageFee, luggage_fees: luggageFees, luggage_rates: terms.luggageFees,
+    total: money(fareTotal - discount + luggageFee + terms.bookingFee),
   };
+}
+
+/** Luggage charge for one passenger. counts = [bags, sacks, containers, boxes, crates, other, note]. */
+export function luggageCharge(rates, counts) {
+  return money(LUGGAGE_KINDS.reduce((sum, [k], i) => {
+    const n = Math.max(0, (counts[i] || 0) - (k === 'bags' ? (rates.free_bags || 0) : 0));
+    return sum + n * (Number(rates[k]) || 0);
+  }, 0));
 }
 
 /** Refund owed on cancellation under the operator's policy. The booking fee is never refunded. */
@@ -55,6 +72,9 @@ export function refundQuote(db, booking, trip) {
   const terms = operatorTerms(db, booking.operator_id);
   const hours = (new Date(trip.depart_at).getTime() - Date.now()) / 36e5;
   const tier = terms.refundPolicy.find(t => hours >= t.hours) || { pct: 0 };
-  const paid = booking.status === 'confirmed' ? money(booking.fare_total - booking.discount) : 0;
-  return { hours_to_departure: Math.round(hours * 10) / 10, pct: tier.pct, amount: money(paid * tier.pct / 100), policy: terms.refundPolicy };
+  const confirmed = booking.status === 'confirmed';
+  const farePaid = confirmed ? Math.max(0, booking.fare_total - booking.discount - (booking.points_discount || 0)) : 0;
+  const luggage = confirmed ? (booking.luggage_fee || 0) : 0;
+  return { hours_to_departure: Math.round(hours * 10) / 10, pct: tier.pct, amount: money(farePaid * tier.pct / 100 + luggage), luggage_refund: luggage,
+    points_restored: booking.points_used || 0, policy: terms.refundPolicy };
 }

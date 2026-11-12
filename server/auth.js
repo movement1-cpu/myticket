@@ -30,7 +30,7 @@ export function readToken(token) {
 
 /** Loads req.user from the Bearer token, if any. Never rejects on its own. */
 export function authenticate(db) {
-  const getUser = db.prepare(`SELECT u.id, u.role, u.name, u.phone, u.email, u.operator_id, u.active,
+  const getUser = db.prepare(`SELECT u.id, u.role, u.name, u.phone, u.email, u.operator_id, u.active, u.lang,
       o.status AS operator_status, o.name AS operator_name
     FROM users u LEFT JOIN operators o ON o.id = u.operator_id WHERE u.id = ?`);
   return (req, _res, next) => {

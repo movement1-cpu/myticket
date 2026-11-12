@@ -1,20 +1,22 @@
 import { html, $$ } from './core.js';
+import { t } from './i18n.js';
 
-export const KINDS = [['bags', 'Bags'], ['sacks', 'Sacks'], ['containers', 'Containers'], ['boxes', 'Boxes'], ['crates', 'Crates'], ['other', 'Other']];
+export const KINDS = ['bags', 'sacks', 'containers', 'boxes', 'crates', 'other'].map(k => [k, ({ bags: 'Bags', sacks: 'Sacks', containers: 'Containers', boxes: 'Boxes', crates: 'Crates', other: 'Other' })[k]]);
+const label = k => t('l.' + k);
 
 /** Luggage yes/no with +/− counters per kind. Field names: lug{i} (yes|no), lug{i}_{kind}, lug{i}_note. */
 export function luggageFields(i, prev = {}) {
   const has = prev['lug' + i] === 'yes';
   return html`<div class="lug" data-lug="${i}">
-    <div class="row" style="align-items:center;gap:8px"><span class="small" style="font-weight:600">Luggage?</span>
-      <label class="chip"><input type="radio" name="lug${i}" value="no" ${has ? '' : 'checked'}>No</label>
-      <label class="chip"><input type="radio" name="lug${i}" value="yes" ${has ? 'checked' : ''}>Yes</label></div>
+    <div class="row" style="align-items:center;gap:8px"><span class="small" style="font-weight:600">${t('l.q')}</span>
+      <label class="chip"><input type="radio" name="lug${i}" value="no" ${has ? '' : 'checked'}>${t('l.no')}</label>
+      <label class="chip"><input type="radio" name="lug${i}" value="yes" ${has ? 'checked' : ''}>${t('l.yes')}</label></div>
     <div class="lug-counts" ${has ? '' : 'hidden'}>
-      ${KINDS.map(([k, label]) => html`<div class="stepper"><span>${label}</span>
-        <button type="button" data-step="-1" aria-label="One fewer ${label.toLowerCase()}">−</button>
-        <input type="number" inputmode="numeric" min="0" max="50" name="lug${i}_${k}" value="${prev[`lug${i}_${k}`] || 0}" aria-label="${label}">
-        <button type="button" data-step="1" aria-label="One more ${label.toLowerCase()}">+</button></div>`)}
-      <input name="lug${i}_note" placeholder="Describe other items (e.g. bicycle, mattress)" value="${prev[`lug${i}_note`] || ''}" maxlength="120" style="grid-column:1/-1">
+      ${KINDS.map(([k]) => html`<div class="stepper"><span>${label(k)}</span>
+        <button type="button" data-step="-1" aria-label="− ${label(k)}">−</button>
+        <input type="number" inputmode="numeric" min="0" max="50" name="lug${i}_${k}" value="${prev[`lug${i}_${k}`] || 0}" aria-label="${label(k)}">
+        <button type="button" data-step="1" aria-label="+ ${label(k)}">+</button></div>`)}
+      <input name="lug${i}_note" placeholder="${t('l.note')}" value="${prev[`lug${i}_note`] || ''}" maxlength="120" style="grid-column:1/-1">
     </div></div>`;
 }
 

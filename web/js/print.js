@@ -37,6 +37,8 @@ function ticketSlip(t, seats, copy) {
       <div>Luggage: ${s.luggage.has ? s.luggage.text : 'none'}</div><div class="kv small"><span>Fare</span><span>${kwacha(s.fare)}</span></div><hr class="rule">`)}
     ${whole ? html`<div class="kv"><span>Fares</span><b>${kwacha(t.fare_total)}</b></div>
       ${t.discount ? html`<div class="kv"><span>Discount</span><b>-${kwacha(t.discount)}</b></div>` : ''}
+      ${t.luggage_fee ? html`<div class="kv"><span>Luggage</span><b>${kwacha(t.luggage_fee)}</b></div>` : ''}
+      ${t.points_discount ? html`<div class="kv"><span>Points (${t.points_used})</span><b>-${kwacha(t.points_discount)}</b></div>` : ''}
       <div class="kv"><span>Booking fee</span><b>${kwacha(t.booking_fee)}</b></div>
       <div class="kv big"><span>TOTAL</span><span>${kwacha(t.total)}</span></div>` : html`<div class="kv"><span>This passenger</span><b>${kwacha(fare)}</b></div>`}
     ${t.status === 'reserved' ? html`<div class="unpaid">NOT PAID<br>Pay at the counter before ${time(t.expires_at)} or the seat is released</div>`

@@ -9,6 +9,8 @@ import publicRoutes from './routes/public.js';
 import operatorRoutes from './routes/operator.js';
 import agentRoutes from './routes/agent.js';
 import adminRoutes from './routes/admin.js';
+import { handleUssd, handleSms } from './services/ussd.js';
+import { queue } from './services/notify.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -28,6 +30,7 @@ export function createApp(db) {
     next();
   });
   app.use(express.json({ limit: '8mb' }));
+  app.use(express.urlencoded({ extended: false, limit: '20kb' })); // USSD / SMS gateway callbacks
   app.use(authenticate(db));
 
   const api = express.Router();
@@ -43,12 +46,33 @@ export function createApp(db) {
     res.set('Content-Type', d.mime).set('Content-Disposition', `inline; filename="${d.filename.replace(/"/g, '')}"`);
     res.sendFile(path.join(config.uploadDir, d.stored_name));
   });
+  /**
+   * USSD and inbound SMS gateways (Africa's Talking format). Gateways do not sign requests, so in production
+   * set USSD_SECRET and register the callback URL with ?key=<secret>.
+   */
+  const gatewayKey = (req) => {
+    if (config.ussdSecret && req.query.key !== config.ussdSecret) throw new HttpError(403, 'Bad gateway key.');
+  };
+  api.post('/ussd', async (req, res) => {
+    gatewayKey(req);
+    let reply;
+    try { reply = await handleUssd(db, { phoneNumber: req.body.phoneNumber, text: req.body.text || '' }); }
+    catch (e) { reply = `END ${e instanceof HttpError ? e.message : 'Something went wrong. Please try again.'}`; if (!(e instanceof HttpError)) console.error(e); }
+    res.type('text/plain').send(reply);
+  });
+  api.post('/sms/inbound', async (req, res) => {
+    gatewayKey(req);
+    try { const reply = await handleSms(db, { from: req.body.from, text: req.body.text }); queue(db, { channel: 'sms', to: String(req.body.from).replace(/\D/g, ''), body: reply, kind: 'sms_reply' }); }
+    catch (e) { if (!(e instanceof HttpError)) console.error(e); }
+    res.json({ ok: true });
+  });
   api.get('/health', (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
   api.use((_req, _res, next) => next(notFound('Unknown API endpoint.')));
   app.use('/api', api);
 
   app.use('/vendor/leaflet', express.static(path.join(root, 'node_modules/leaflet/dist'), { maxAge: '7d' }));
   app.use('/vendor/jsqr', express.static(path.join(root, 'node_modules/jsqr/dist'), { maxAge: '7d' }));
+  if (config.isProd) app.get('/ussd.html', (_req, res) => res.status(404).end()); // simulator is for development only
   app.use(express.static(path.join(root, 'web'), { extensions: ['html'] }));
 
   app.use((err, _req, res, _next) => {

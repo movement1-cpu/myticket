@@ -9,6 +9,7 @@ const SECTIONS = [
   ['parcels', 'Parcels', ['operator', 'clerk']],
   ['fleet', 'Fleet', ['operator']],
   ['staff', 'Drivers & staff', ['operator']],
+  ['maintenance', 'Maintenance', ['operator']],
   ['routes', 'Routes & stops', ['operator']],
   ['schedules', 'Timetable', ['operator']],
   ['pricing', 'Fares & promos', ['operator']],
@@ -38,10 +39,12 @@ export async function render(app, section, arg) {
 
 /* ---------- dashboard ---------- */
 async function dashboard(main) {
-  const [fin, trips] = await Promise.all([api('/operator/finance?days=30'), api('/operator/trips?date=' + today())]);
+  const [fin, trips, maint] = await Promise.all([api('/operator/finance?days=30'), api('/operator/trips?date=' + today()), api('/operator/maintenance')]);
+  const urgent = maint.due.filter(d => d.severity !== 'missing');
   const sold = trips.reduce((a, t) => a + t.booked, 0), cap = trips.reduce((a, t) => a + t.capacity, 0);
   const gross = fin.daily.reduce((a, d) => a + d.gross, 0), net = fin.daily.reduce((a, d) => a + d.gross - d.commission, 0);
   main.innerHTML = html`<div class="head"><h1>Today, ${dayOf(today())}</h1><a class="btn" href="#/op/counter">Sell a ticket</a></div>
+    ${urgent.length ? html`<a class="notice ${urgent.some(d => d.severity === 'overdue') ? 'bad' : ''}" href="#/op/maintenance" style="color:inherit;text-decoration:none;display:block"><b>Maintenance: ${urgent.length} item${urgent.length > 1 ? 's' : ''} need attention.</b> ${urgent.slice(0, 3).map(d => d.text).join(' · ')}${urgent.length > 3 ? ' …' : ''}</a>` : ''}
     <div class="kpis">
       <div class="kpi"><span class="label">Departures today</span><b>${trips.length}</b><span class="small muted">${trips.filter(t => t.status === 'departed').length} on the road</span></div>
       <div class="kpi"><span class="label">Seats sold today</span><b>${sold}</b><span class="small muted">${cap ? Math.round(sold / cap * 100) : 0}% of ${cap}</span></div>
@@ -56,7 +59,7 @@ async function dashboard(main) {
 function tripTable(trips, compact = false) {
   if (!trips.length) return '<div class="empty">No departures on this date.</div>';
   return html`<div class="tablewrap"><table><thead><tr><th>Time</th><th>Route</th><th>Bus</th>${compact ? '' : raw('<th>Crew</th>')}<th class="r">Booked</th><th class="r">Boarded</th><th>Status</th>${compact ? '' : raw('<th></th>')}</tr></thead><tbody>
-    ${trips.map(t => html`<tr><td class="num"><b>${t.depart_local}</b>${t.delay_min ? html`<br><span class="small" style="color:var(--warn)">+${t.delay_min} min</span>` : ''}</td><td>${t.route_name}</td><td><span class="mono">${t.plate}</span><br><span class="small muted">${t.class}</span></td>
+    ${trips.map(t => html`<tr><td class="num"><b>${t.depart_local}</b>${t.delay_min ? html`<br><span class="small" style="color:var(--warn)">+${t.delay_min} min</span>` : ''}</td><td>${t.route_name}</td><td><span class="mono">${t.plate}</span><br><span class="small muted">${t.class}</span>${t.blockers?.length ? html`<br><span class="pill bad" title="Fix before departure">${t.blockers.join(', ')}</span>` : ''}</td>
       ${compact ? '' : html`<td class="small">${t.driver_name || raw('<span style="color:var(--bad)">No driver</span>')}<br>${t.conductor_name || raw('<span class="muted">No conductor</span>')}</td>`}
       <td class="r num">${t.booked}/${t.capacity}</td><td class="r num">${t.boarded}</td><td>${pill(t.status)}</td>
       ${compact ? '' : html`<td><div class="row" style="gap:4px;flex-wrap:nowrap"><button class="btn sm" data-manifest="${t.id}">Manifest</button><button class="btn ghost sm" data-status="${t.id}">Status</button>${auth.user.role === 'operator' ? html`<button class="btn ghost sm" data-crew="${t.id}">Crew</button>` : ''}</div></td>`}</tr>`)}
@@ -178,8 +181,9 @@ async function counter(main) {
       $('#sell', main).disabled = !seats.length;
       if (!seats.length) { $('#q', main).innerHTML = ''; return; }
       const v = formData(f);
-      const q = await api('/quote', { method: 'POST', body: { trip_id: trip.id, from_stop_id: Number(v.from), to_stop_id: Number(v.to), passengers: seats.map((_, i) => ({ is_child: !!v['child' + i] })) } }).catch(err => { toast(err.message, true); return null; });
-      if (q) $('#q', main).innerHTML = html`<div class="sumrow total"><span>Collect</span><span class="num">${kwacha(q.total)}</span></div><div class="small muted">Fares ${kwacha(q.fare_total)} + booking fee ${kwacha(q.booking_fee)}</div>`;
+      const q = await api('/quote', { method: 'POST', body: { trip_id: trip.id, from_stop_id: Number(v.from), to_stop_id: Number(v.to), passengers: seats.map((_, i) => ({ is_child: !!v['child' + i], luggage: readLuggage(v, i) })) } }).catch(err => { $('#q', main).innerHTML = html`<div class="notice bad small">${err.message}</div>`; return null; });
+      if (q) $('#q', main).innerHTML = html`<div class="sumrow total"><span>Collect</span><span class="num">${kwacha(q.total)}</span></div>
+        <div class="small muted">Fares ${kwacha(q.fare_total)}${q.luggage_fee ? ` + luggage ${kwacha(q.luggage_fee)}` : ''} + booking fee ${kwacha(q.booking_fee)}</div>`;
     };
     picker = seatPicker($('#smap', main), { tripId: trip.id, onChange: h => {
       const prev = formData(f);
@@ -193,8 +197,10 @@ async function counter(main) {
         ${luggageFields(i, prev)}</div>`).join('') : '<div class="empty small">Tap seats on the bus map.</div>';
       quote();
     } });
-    bindLuggage(f);
-    f.addEventListener('change', e => { if (!e.target.closest('.lug')) quote(); });
+    let qt = null;
+    const requote = () => { clearTimeout(qt); qt = setTimeout(quote, 250); };
+    bindLuggage(f, requote);
+    f.addEventListener('change', requote);
     f.addEventListener('submit', ev => {
       ev.preventDefault();
       const v = formData(f);
@@ -291,6 +297,65 @@ async function staffView(main) {
     f.addEventListener('submit', e => { e.preventDefault(); busy(f.querySelector('.btn:not(.ghost)'), async () => { await api('/operator/staff', { method: 'POST', body: formData(f) }); m.close(); toast('Added.'); staffView(main); }); });
   });
   main.addEventListener('click', e => { const b = e.target.closest('[data-toggle]'); if (b) busy(b, async () => { await api('/operator/staff/' + b.dataset.toggle, { method: 'PUT', body: { active: b.dataset.active !== '1' } }); staffView(main); }); });
+}
+
+/* ---------- maintenance & compliance ---------- */
+async function maintenance(main) {
+  const m = await api('/operator/maintenance');
+  const sev = { overdue: 'bad', soon: 'warn', missing: 'idle' };
+  const dateCell = d => !d ? raw('<span class="pill idle">not set</span>') : d < today() ? html`<span class="pill bad">${d}</span>` : d <= plusDays(today(), 14) ? html`<span class="pill warn">${d}</span>` : html`<span class="small">${d}</span>`;
+  main.innerHTML = html`<div class="head"><h1>Maintenance</h1><button class="btn" id="log">Record work done</button></div>
+    <p class="small muted" style="margin:0">Mileage goes up automatically by the route distance after every trip. You get an SMS each morning when something is overdue or due within 14 days or 1,000 km.</p>
+    <div class="card"><h3>Needs attention (${m.due.length})</h3>${m.due.length ? html`<div class="page" style="gap:6px">${m.due.map(d => html`<div class="row" style="align-items:center">${pill(d.severity === 'missing' ? 'not set' : d.severity)}<span>${d.text}</span></div>`)}</div>`
+      : raw('<div class="empty small">All buses and drivers are up to date.</div>')}</div>
+    <div class="card"><h3>Buses</h3><div class="tablewrap"><table><thead><tr><th>Bus</th><th class="r">Odometer</th><th class="r">Next service</th><th>Fitness (RTSA)</th><th>Insurance</th><th>Road tax</th><th></th></tr></thead><tbody>
+      ${m.buses.map(b => html`<tr><td><b class="mono">${b.plate}</b><br><span class="small muted">${b.class}${b.last_service_date ? ` · serviced ${b.last_service_date}` : ''}</span></td>
+        <td class="r num">${Math.round(b.odometer_km).toLocaleString()} km</td>
+        <td class="r num">${b.km_to_service <= 0 ? html`<span class="pill bad">${(-b.km_to_service).toLocaleString()} km overdue</span>` : b.km_to_service <= 1000 ? html`<span class="pill warn">in ${b.km_to_service.toLocaleString()} km</span>` : `in ${b.km_to_service.toLocaleString()} km`}<br><span class="small muted">every ${b.service_interval_km.toLocaleString()} km</span></td>
+        <td>${dateCell(b.fitness_expiry)}</td><td>${dateCell(b.insurance_expiry)}</td><td>${dateCell(b.road_tax_expiry)}</td>
+        <td><button class="btn ghost sm" data-bus="${b.id}">Edit</button></td></tr>`)}</tbody></table></div></div>
+    <div class="card"><h3>Driver licences</h3><div class="tablewrap"><table><thead><tr><th>Driver</th><th>Licence no.</th><th>Expires</th><th></th></tr></thead><tbody>
+      ${m.drivers.map(d => html`<tr><td>${d.name}</td><td class="mono">${d.licence_no || ''}</td><td>${dateCell(d.licence_expiry)}</td><td><button class="btn ghost sm" data-driver="${d.id}">Edit</button></td></tr>`)}</tbody></table></div></div>
+    <div class="card"><h3>Work log</h3>${m.log.length ? html`<div class="tablewrap"><table><thead><tr><th>Date</th><th>Bus</th><th>Work</th><th class="r">Odometer</th><th class="r">Cost</th><th>Notes</th></tr></thead><tbody>
+      ${m.log.map(l => html`<tr><td class="small">${l.done_on}</td><td class="mono">${l.plate}</td><td>${l.kind}</td><td class="r num">${Math.round(l.odometer_km).toLocaleString()}</td><td class="r num">${l.cost ? kwacha(l.cost) : ''}</td><td class="small">${l.notes || ''}</td></tr>`)}</tbody></table></div>` : raw('<div class="empty small">Nothing recorded yet.</div>')}</div>`;
+  const reload = () => maintenance(main);
+  $('#log', main).addEventListener('click', () => {
+    const mo = modal(html`<h2>Record work done</h2><form id="mf" class="grid2">
+      <label class="field"><span>Bus</span><select name="bus_id">${m.buses.map(b => html`<option value="${b.id}">${b.plate}</option>`)}</select></label>
+      <label class="field"><span>Work</span><select name="kind"><option value="service">Full service (resets the service counter)</option><option value="repair">Repair</option><option value="tyres">Tyres</option><option value="inspection">RTSA inspection</option><option value="other">Other</option></select></label>
+      <label class="field"><span>Date</span><input type="date" name="done_on" value="${today()}" max="${today()}" required></label>
+      <label class="field"><span>Odometer (km, optional)</span><input type="number" name="odometer_km" min="0" placeholder="Current reading"></label>
+      <label class="field"><span>Cost (K, optional)</span><input type="number" name="cost" min="0" step="0.01"></label>
+      <label class="field" id="fit" hidden><span>New fitness certificate expiry</span><input type="date" name="fitness_expiry"></label>
+      <label class="field" style="grid-column:1/-1"><span>Notes</span><input name="notes" maxlength="500"></label>
+      <div class="row" style="justify-content:flex-end;grid-column:1/-1"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn">Save</button></div></form>`, { wide: true });
+    const f = $('#mf', mo.el);
+    f.kind.addEventListener('change', () => { $('#fit', f).hidden = f.kind.value !== 'inspection'; });
+    f.addEventListener('submit', e => { e.preventDefault(); busy(f.querySelector('.btn:not(.ghost)'), async () => { await api('/operator/maintenance', { method: 'POST', body: formData(f) }); mo.close(); toast('Saved.'); reload(); }); });
+  });
+  main.addEventListener('click', e => {
+    const b = e.target.closest('[data-bus]'), d = e.target.closest('[data-driver]');
+    if (b) {
+      const bus = m.buses.find(x => x.id === Number(b.dataset.bus));
+      const mo = modal(html`<h2>${bus.plate}</h2><form id="cf" class="grid2">
+        <label class="field"><span>RTSA certificate of fitness expires</span><input type="date" name="fitness_expiry" value="${bus.fitness_expiry || ''}"></label>
+        <label class="field"><span>Insurance expires</span><input type="date" name="insurance_expiry" value="${bus.insurance_expiry || ''}"></label>
+        <label class="field"><span>Road tax expires</span><input type="date" name="road_tax_expiry" value="${bus.road_tax_expiry || ''}"></label>
+        <label class="field"><span>Service every (km)</span><input type="number" name="service_interval_km" min="1000" step="500" value="${bus.service_interval_km}"></label>
+        <label class="field"><span>Odometer correction (km)</span><input type="number" name="odometer_km" min="0" value="${Math.round(bus.odometer_km)}"></label>
+        <div class="row" style="justify-content:flex-end;align-self:end"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn">Save</button></div></form>`);
+      const f = $('#cf', mo.el);
+      f.addEventListener('submit', ev => { ev.preventDefault(); busy(f.querySelector('.btn:not(.ghost)'), async () => { await api(`/operator/buses/${bus.id}/compliance`, { method: 'PUT', body: formData(f) }); mo.close(); toast('Saved.'); reload(); }); });
+    }
+    if (d) {
+      const dr = m.drivers.find(x => x.id === Number(d.dataset.driver));
+      const mo = modal(html`<h2>${dr.name}</h2><form id="df" class="grid2"><label class="field"><span>Licence number</span><input name="licence_no" value="${dr.licence_no || ''}"></label>
+        <label class="field"><span>Licence expires</span><input type="date" name="licence_expiry" value="${dr.licence_expiry || ''}"></label>
+        <div></div><div class="row" style="justify-content:flex-end"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn">Save</button></div></form>`);
+      const f = $('#df', mo.el);
+      f.addEventListener('submit', ev => { ev.preventDefault(); busy(f.querySelector('.btn:not(.ghost)'), async () => { await api(`/operator/staff/${dr.id}`, { method: 'PUT', body: formData(f) }); mo.close(); toast('Saved.'); reload(); }); });
+    }
+  });
 }
 
 /* ---------- routes & terminals ---------- */
@@ -478,6 +543,9 @@ async function company(main) {
       <h3>Cancellation policy</h3><p class="small muted" style="margin:0">Refund percentage of the fare by how early the passenger cancels.</p>
       <div id="tiers" class="page" style="gap:6px">${p.terms.refundPolicy.map((t, i) => html`<div class="row" style="flex-wrap:nowrap"><input name="h${i}" type="number" min="0" value="${t.hours}" style="max-width:110px" aria-label="Hours before"><span class="small muted">hours or more before departure →</span><input name="p${i}" type="number" min="0" max="100" value="${t.pct}" style="max-width:90px" aria-label="Refund percent"><span class="small muted">% refund</span></div>`)}</div>
       <label class="field" style="max-width:220px"><span>Date/time change fee (K)</span><input name="reschedule_fee" type="number" min="0" value="${p.reschedule_fee}"></label>
+      <h3>Luggage prices</h3><p class="small muted" style="margin:0">Charged per item and added to the ticket. Put 0 for items you carry free. The luggage charge goes to you in full (no commission).</p>
+      <div class="grid4">${KINDS.map(([k, l]) => html`<label class="field"><span>${l} (K each)</span><input name="lf_${k}" type="number" min="0" step="0.5" value="${p.terms.luggageFees[k]}"></label>`)}
+        <label class="field"><span>Free bags per passenger</span><input name="lf_free_bags" type="number" min="0" max="10" value="${p.terms.luggageFees.free_bags}"></label></div>
       <div class="small muted">Your commission: ${p.terms.commissionPct}% of fares · Booking fee charged to passengers: ${kwacha(p.terms.bookingFee)}</div>
       <div><button class="btn">Save</button></div></form>`;
   main.addEventListener('change', async e => {
@@ -489,9 +557,10 @@ async function company(main) {
   f.addEventListener('submit', e => { e.preventDefault(); busy(f.querySelector('button'), async () => {
     const v = formData(f);
     const refund_policy = p.terms.refundPolicy.map((_, i) => ({ hours: Number(v['h' + i]), pct: Number(v['p' + i]) }));
-    await api('/operator/profile', { method: 'PUT', body: { ...v, refund_policy, reschedule_fee: Number(v.reschedule_fee) } });
+    const luggage_fees = Object.fromEntries([...KINDS.map(([k]) => k), 'free_bags'].map(k => [k, Number(v['lf_' + k]) || 0]));
+    await api('/operator/profile', { method: 'PUT', body: { ...v, refund_policy, reschedule_fee: Number(v.reschedule_fee), luggage_fees } });
     toast('Saved.');
   }); });
 }
 
-const VIEWS = { dashboard, trips, counter, fleet, staff: staffView, routes, schedules, pricing, parcels, reviews, finance, company };
+const VIEWS = { dashboard, trips, counter, fleet, staff: staffView, maintenance, routes, schedules, pricing, parcels, reviews, finance, company };

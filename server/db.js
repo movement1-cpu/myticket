@@ -290,6 +290,30 @@ CREATE TABLE IF NOT EXISTS disputes (
   created_at TEXT NOT NULL DEFAULT (datetime('now')), resolved_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS loyalty_ledger (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  booking_id INTEGER REFERENCES bookings(id),
+  points INTEGER NOT NULL,          -- + earned / restored, − redeemed / reversed
+  kind TEXT NOT NULL CHECK (kind IN ('earn','redeem','restore','adjust')),
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_loyalty_earn ON loyalty_ledger(booking_id) WHERE kind = 'earn';
+
+CREATE TABLE IF NOT EXISTS maintenance_log (
+  id INTEGER PRIMARY KEY,
+  operator_id INTEGER NOT NULL REFERENCES operators(id),
+  bus_id INTEGER NOT NULL REFERENCES buses(id),
+  done_on TEXT NOT NULL, odometer_km REAL NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('service','repair','tyres','inspection','other')),
+  cost REAL, notes TEXT, created_by INTEGER REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Language preference for phone numbers without an account (USSD / SMS users).
+CREATE TABLE IF NOT EXISTS phone_prefs (phone TEXT PRIMARY KEY, lang TEXT NOT NULL DEFAULT 'en');
+
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY,
   user_id INTEGER, action TEXT NOT NULL, entity TEXT, entity_id TEXT, detail TEXT,
@@ -302,6 +326,9 @@ const DEFAULT_SETTINGS = {
   commission_pct: '8',          // % of fare kept by platform
   hold_minutes: '10',           // seat lock during checkout
   reserve_minutes: '30',        // pay-at-station hold
+  loyalty_points_per_kwacha: '0.1', // 1 point per K10 of fare on completed trips
+  loyalty_point_value: '0.1',       // 1 point = K0.10 when redeemed (so 100 points = K10)
+  loyalty_max_pct: '50',            // points can pay at most this % of a fare
   refund_policy: JSON.stringify([{ hours: 48, pct: 90 }, { hours: 24, pct: 75 }, { hours: 6, pct: 50 }, { hours: 0, pct: 0 }]),
 };
 
@@ -318,11 +345,27 @@ export function openDb(file = config.dbFile) {
 
 /** Additive migrations for databases created by earlier versions. */
 function migrate(db) {
-  const cols = new Set(db.prepare('PRAGMA table_info(booking_seats)').all().map(c => c.name));
-  for (const c of ['lug_bags', 'lug_sacks', 'lug_containers', 'lug_boxes', 'lug_crates', 'lug_other']) {
-    if (!cols.has(c)) db.exec(`ALTER TABLE booking_seats ADD COLUMN ${c} INTEGER NOT NULL DEFAULT 0`);
-  }
-  if (!cols.has('lug_note')) db.exec('ALTER TABLE booking_seats ADD COLUMN lug_note TEXT');
+  const has = (table, col) => db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === col);
+  const add = (table, col, def) => { if (!has(table, col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`); };
+  for (const c of ['lug_bags', 'lug_sacks', 'lug_containers', 'lug_boxes', 'lug_crates', 'lug_other']) add('booking_seats', c, 'INTEGER NOT NULL DEFAULT 0');
+  add('booking_seats', 'lug_note', 'TEXT');
+  // v3: luggage charges, loyalty points, languages, maintenance
+  add('operators', 'luggage_fees', 'TEXT');
+  add('bookings', 'luggage_fee', 'REAL NOT NULL DEFAULT 0');
+  add('bookings', 'points_used', 'INTEGER NOT NULL DEFAULT 0');
+  add('bookings', 'points_discount', 'REAL NOT NULL DEFAULT 0');
+  add('bookings', 'lang', "TEXT NOT NULL DEFAULT 'en'");
+  add('bookings', 'source', 'TEXT'); // 'ussd' for basic-phone bookings
+  add('users', 'lang', "TEXT NOT NULL DEFAULT 'en'");
+  add('buses', 'odometer_km', 'REAL NOT NULL DEFAULT 0');
+  add('buses', 'service_interval_km', 'INTEGER NOT NULL DEFAULT 10000');
+  add('buses', 'last_service_km', 'REAL NOT NULL DEFAULT 0');
+  add('buses', 'last_service_date', 'TEXT');
+  add('buses', 'fitness_expiry', 'TEXT');
+  add('buses', 'insurance_expiry', 'TEXT');
+  add('buses', 'road_tax_expiry', 'TEXT');
+  add('staff', 'licence_expiry', 'TEXT');
+  add('trips', 'km_logged', 'INTEGER NOT NULL DEFAULT 0');
 }
 
 /** Run fn inside a write transaction. BEGIN IMMEDIATE serialises writers, so check-then-insert is safe. */

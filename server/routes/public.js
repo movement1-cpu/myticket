@@ -9,6 +9,9 @@ import { createBookings, startPayment, checkPayment, cancelBooking, rescheduleBo
 import { ticketData, ticketPdf, qrSvg, validKey } from '../services/tickets.js';
 import { providers } from '../services/payments/providers.js';
 import { bus } from '../services/events.js';
+import { pointsBalance, loyaltyTerms } from '../services/loyalty.js';
+import { LANGS } from '../i18n.js';
+import { config } from '../config.js';
 
 const list = v => v == null || v === '' ? [] : Array.isArray(v) ? v : String(v).split(',');
 
@@ -59,6 +62,21 @@ export default function publicRoutes(db) {
   });
 
   r.get('/me', requireRole('passenger', 'clerk', 'conductor', 'operator', 'admin'), (req, res) => res.json(req.user));
+  r.put('/me', requireRole('passenger', 'clerk', 'conductor', 'operator', 'admin'), (req, res) => {
+    if (req.body.lang !== undefined) {
+      if (!LANGS[req.body.lang]) throw bad('Unknown language.');
+      db.prepare('UPDATE users SET lang = ? WHERE id = ?').run(req.body.lang, req.user.id);
+    }
+    res.json({ ok: true });
+  });
+  r.get('/languages', (_req, res) => res.json({ languages: LANGS, ussd_code: config.ussdCode }));
+
+  /* ---------- loyalty points ---------- */
+  r.get('/my/points', requireRole('passenger'), (req, res) => {
+    const t = loyaltyTerms(db);
+    res.json({ balance: pointsBalance(db, req.user.id), point_value: t.pointValue, points_per_kwacha: t.perKwacha, max_pct: t.maxPct,
+      history: db.prepare('SELECT l.points, l.kind, l.note, l.created_at FROM loyalty_ledger l WHERE l.user_id = ? ORDER BY l.id DESC LIMIT 30').all(req.user.id) });
+  });
 
   /* ---------- discovery ---------- */
   r.get('/cities', (_req, res) => {

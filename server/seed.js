@@ -209,6 +209,28 @@ export function seedDemo(db) {
     db.prepare("INSERT INTO parcels (ref, operator_id, from_city, to_city, sender_name, sender_phone, receiver_name, receiver_phone, description, weight_kg, fee, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
       .run('PCDEMO1', ops[Z], 'Lusaka', 'Kitwe', 'Joyce Mbewe', '260977111222', 'Paul Mbewe', '260966333444', 'Box of school books', 12, 80, 'received');
     db.prepare("INSERT INTO settlements (operator_id, amount, bank_snapshot, created_at) VALUES (?, 15000, 'Stanbic 9100001234567 Kitwe', datetime('now','-1 day'))").run(ops[C]);
+
+    // Luggage prices: Zambezi charges for bulky items (first bag free); Copperbelt Express carries luggage free.
+    db.prepare('UPDATE operators SET luggage_fees = ? WHERE id = ?').run(JSON.stringify({ bags: 10, sacks: 20, containers: 15, boxes: 10, crates: 30, other: 25, free_bags: 1 }), ops[Z]);
+
+    // Mileage, service history and document expiry dates (some due soon or overdue, to show reminders).
+    const busUp = (id, odo, lastSvc, interval, fit, ins, tax) => db.prepare(`UPDATE buses SET odometer_km = ?, last_service_km = ?, last_service_date = ?, service_interval_km = ?,
+      fitness_expiry = ?, insurance_expiry = ?, road_tax_expiry = ? WHERE id = ?`).run(odo, lastSvc, addDays(today, -40), interval, fit, ins, tax, id);
+    busUp(B.zLux, 182340, 172900, 10000, addDays(today, 120), addDays(today, 200), addDays(today, 9));   // service in 560 km, road tax in 9 days
+    busUp(B.zStd, 241880, 230500, 10000, addDays(today, -3), addDays(today, 90), addDays(today, 150));   // service overdue, fitness expired
+    busUp(B.zVip, 98770, 95000, 15000, addDays(today, 200), addDays(today, 12), addDays(today, 200));    // insurance in 12 days
+    busUp(B.zSemi, 132050, 125000, 10000, addDays(today, 60), addDays(today, 300), addDays(today, 60));
+    busUp(B.cExp, 77300, 70000, 10000, addDays(today, 150), addDays(today, 150), addDays(today, 150));
+    busUp(B.cStd, 301220, 295000, 10000, addDays(today, 30), addDays(today, 30), addDays(today, 30));
+    db.prepare("UPDATE staff SET licence_expiry = ? WHERE role = 'driver' AND operator_id = ?").run(addDays(today, 400), ops[Z]);
+    db.prepare("UPDATE staff SET licence_expiry = ? WHERE name = 'Peter Sakala'").run(addDays(today, 6));
+    db.prepare("UPDATE staff SET licence_expiry = ? WHERE operator_id = ? AND role = 'driver'").run(addDays(today, 500), ops[C]);
+    db.prepare("INSERT INTO maintenance_log (operator_id, bus_id, done_on, odometer_km, kind, cost, notes) VALUES (?,?,?,?,?,?,?)").run(ops[Z], B.zLux, addDays(today, -40), 172900, 'service', 4800, 'Oil, filters, brake pads');
+    db.prepare("INSERT INTO maintenance_log (operator_id, bus_id, done_on, odometer_km, kind, cost, notes) VALUES (?,?,?,?,?,?,?)").run(ops[Z], B.zSemi, addDays(today, -12), 131200, 'tyres', 9600, '2 front tyres');
+    db.prepare("UPDATE trips SET km_logged = 1 WHERE service_date < ?").run(today); // seeded odometers already include past trips
+
+    // Loyalty: the demo passenger has points to spend.
+    db.prepare("INSERT INTO loyalty_ledger (user_id, points, kind, note) VALUES (?, 250, 'adjust', 'Welcome bonus')").run(nat);
   });
 }
 

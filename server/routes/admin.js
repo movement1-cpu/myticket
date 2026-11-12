@@ -45,12 +45,14 @@ export default function adminRoutes(db) {
   /* ---------- commission & fee engine ---------- */
   r.get('/admin/settings', admin, (_req, res) => {
     res.json({ booking_fee: Number(setting(db, 'booking_fee')), commission_pct: Number(setting(db, 'commission_pct')), hold_minutes: Number(setting(db, 'hold_minutes')),
-      reserve_minutes: Number(setting(db, 'reserve_minutes')), refund_policy: JSON.parse(setting(db, 'refund_policy')) });
+      reserve_minutes: Number(setting(db, 'reserve_minutes')), refund_policy: JSON.parse(setting(db, 'refund_policy')),
+      loyalty_points_per_kwacha: Number(setting(db, 'loyalty_points_per_kwacha')), loyalty_point_value: Number(setting(db, 'loyalty_point_value')), loyalty_max_pct: Number(setting(db, 'loyalty_max_pct')) });
   });
   r.put('/admin/settings', admin, (req, res) => {
     const b = req.body, up = db.prepare('UPDATE settings SET value = ? WHERE key = ?');
     const num = (k, min, max) => { if (b[k] === undefined) return; const v = Number(b[k]); if (!(v >= min && v <= max)) throw bad(`${k.replace(/_/g, ' ')} must be between ${min} and ${max}.`); up.run(String(v), k); };
-    tx(db, () => { num('booking_fee', 0, 500); num('commission_pct', 0, 30); num('hold_minutes', 5, 15); num('reserve_minutes', 10, 120); });
+    tx(db, () => { num('booking_fee', 0, 500); num('commission_pct', 0, 30); num('hold_minutes', 5, 15); num('reserve_minutes', 10, 120);
+      num('loyalty_points_per_kwacha', 0, 1); num('loyalty_point_value', 0, 1); num('loyalty_max_pct', 0, 100); });
     audit(req, 'settings', 'settings', '-', JSON.stringify(b));
     res.json({ ok: true });
   });
@@ -130,7 +132,7 @@ export default function adminRoutes(db) {
     const days = Math.min(Number(req.query.days) || 30, 366);
     const since = addDays(localDate(), -days + 1);
     const paid = "b.status IN ('confirmed','completed')";
-    const totals = db.prepare(`SELECT COALESCE(SUM(b.total),0) gmv, COALESCE(SUM(b.commission + b.booking_fee),0) revenue, COUNT(*) bookings,
+    const totals = db.prepare(`SELECT COALESCE(SUM(b.total),0) gmv, COALESCE(SUM(b.commission + b.booking_fee - b.points_discount),0) revenue, COUNT(*) bookings,
         (SELECT COUNT(*) FROM booking_seats bs JOIN bookings b2 ON b2.id = bs.booking_id JOIN trips t2 ON t2.id = b2.trip_id WHERE bs.active = 1 AND b2.status IN ('confirmed','completed') AND t2.service_date >= ?) seats
       FROM bookings b JOIN trips t ON t.id = b.trip_id WHERE ${paid} AND t.service_date >= ?`).get(since, since);
     const daily = db.prepare(`SELECT t.service_date day, SUM(b.total) gmv, COUNT(*) bookings FROM bookings b JOIN trips t ON t.id = b.trip_id
@@ -138,11 +140,11 @@ export default function adminRoutes(db) {
     const routes = db.prepare(`SELECT ft.city || ' → ' || tt.city route, COUNT(*) bookings, SUM(b.total) gmv FROM bookings b JOIN trips t ON t.id = b.trip_id
       JOIN route_stops fs ON fs.id = b.from_stop_id JOIN terminals ft ON ft.id = fs.terminal_id JOIN route_stops ts ON ts.id = b.to_stop_id JOIN terminals tt ON tt.id = ts.terminal_id
       WHERE ${paid} AND t.service_date >= ? GROUP BY route ORDER BY gmv DESC LIMIT 10`).all(since);
-    const operators = db.prepare(`SELECT o.name, COUNT(b.id) bookings, COALESCE(SUM(b.total),0) gmv, COALESCE(SUM(b.commission + b.booking_fee),0) revenue FROM operators o
+    const operators = db.prepare(`SELECT o.name, COUNT(b.id) bookings, COALESCE(SUM(b.total),0) gmv, COALESCE(SUM(b.commission + b.booking_fee - b.points_discount),0) revenue FROM operators o
       LEFT JOIN bookings b ON b.operator_id = o.id AND ${paid} AND b.trip_id IN (SELECT id FROM trips WHERE service_date >= ?) GROUP BY o.id ORDER BY gmv DESC`).all(since);
     const monthly = db.prepare(`SELECT substr(t.service_date,1,7) month, SUM(b.total) gmv, COUNT(*) bookings FROM bookings b JOIN trips t ON t.id = b.trip_id WHERE ${paid} GROUP BY month ORDER BY month DESC LIMIT 12`).all().reverse();
     const users = db.prepare(`SELECT substr(created_at,1,10) day, COUNT(*) n FROM users WHERE role = 'passenger' AND created_at >= ? GROUP BY day ORDER BY day`).all(since);
-    const channels = db.prepare(`SELECT channel, COUNT(*) n FROM bookings b JOIN trips t ON t.id = b.trip_id WHERE ${paid} AND t.service_date >= ? GROUP BY channel`).all(since);
+    const channels = db.prepare(`SELECT COALESCE(source, channel) channel, COUNT(*) n FROM bookings b JOIN trips t ON t.id = b.trip_id WHERE ${paid} AND t.service_date >= ? GROUP BY COALESCE(source, channel)`).all(since);
     const payMethods = db.prepare(`SELECT provider, COUNT(*) n, SUM(status='success') ok, SUM(status='failed') failed FROM payments WHERE created_at >= ? GROUP BY provider`).all(since);
     res.json({ days, totals, daily, routes, operators, monthly, user_growth: users, total_passengers: db.prepare("SELECT COUNT(*) n FROM users WHERE role='passenger'").get().n,
       channels, payment_methods: payMethods, open_disputes: db.prepare("SELECT COUNT(*) n FROM disputes WHERE status='open'").get().n,

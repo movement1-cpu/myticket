@@ -8,6 +8,7 @@ import { cancelBooking } from '../services/bookings.js';
 import { notifyContact } from '../services/notify.js';
 import { layoutForTrip } from '../services/seats.js';
 import { luggageOf } from '../services/luggage.js';
+import { t as tr } from '../i18n.js';
 
 /**
  * Conductor / station agent field app.
@@ -111,17 +112,12 @@ export default function agentRoutes(db) {
     const info = db.prepare(`SELECT b.plate, ft.name terminal, r.name route FROM trips t JOIN buses b ON b.id = t.bus_id JOIN routes r ON r.id = t.route_id
       JOIN route_stops fs ON fs.route_id = t.route_id AND fs.seq = 1 JOIN terminals ft ON ft.id = fs.terminal_id WHERE t.id = ?`).get(t.id);
     const bookings = db.prepare("SELECT * FROM bookings WHERE trip_id = ? AND status IN ('confirmed','reserved','pending_payment')").all(t.id);
-    const msg = {
-      boarding: `MyTicket: Your bus ${info.plate} (${info.route}) is now boarding at ${info.terminal}. Have your QR code and ID ready.`,
-      departed: `MyTicket: Bus ${info.plate} (${info.route}) has departed. Track it live from your ticket link.`,
-      delayed: `MyTicket: Bus ${info.plate} (${info.route}) is delayed by about ${delay} minutes. We are sorry for the wait.`,
-      arrived: `MyTicket: Bus ${info.plate} has arrived. Thank you for travelling. Rate your trip in My trips.`,
-      cancelled: `MyTicket: Bus ${info.plate} (${info.route}) on ${t.service_date} is cancelled by the operator. You get a full refund within 3 working days.`,
-    }[status];
+    const vars = { plate: info.plate, route: info.route, terminal: info.terminal, min: delay, date: t.service_date };
+    const msg = lang => tr(lang, `trip.${status}`, vars);
     let refunded = 0;
     for (const b of bookings) {
       if (status === 'cancelled') { cancelBooking(db, b, { by: req.user, reason: 'Trip cancelled by operator', full: true }); refunded++; }
-      else if (b.status === 'confirmed') notifyContact(db, { phone: b.contact_phone, kind: `trip_${status}`, body: msg });
+      else if (b.status === 'confirmed') notifyContact(db, { phone: b.contact_phone, kind: `trip_${status}`, body: msg(b.lang) });
     }
     db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?,?,?,?,?)').run(req.user.id, `trip_${status}`, 'trip', String(t.id), delay ? `${delay} min` : null);
     res.json({ ok: true, status, notified: bookings.length, refunded });

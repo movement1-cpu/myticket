@@ -16,6 +16,8 @@ export const config = {
   uploadDir: env.UPLOAD_DIR || path.resolve('data/uploads'),
   secret: env.APP_SECRET || crypto.createHash('sha256').update('dev-only-secret').digest('hex'),
   currency: env.CURRENCY || 'ZMW',
+  ussdSecret: env.USSD_SECRET || null,
+  ussdCode: env.USSD_CODE || '*384*123#',
   timezoneOffset: env.TZ_OFFSET || '+02:00', // Africa/Lusaka, no DST
   // Payment providers run in sandbox until their credentials are present.
   payments: {

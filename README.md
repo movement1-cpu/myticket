@@ -81,6 +81,29 @@ npm test
 - Analytics: GMV, platform revenue, bookings, passenger growth, top routes, per-company figures, monthly seasonality, sales channels and payment success rates.
 - Platform-wide promo codes, bulk SMS and WhatsApp (to all passengers, passengers travelling through a town, one trip, or all companies), the notification outbox and an audit log.
 
+**Basic phones (USSD and SMS)**
+- Dial the USSD code (set `USSD_CODE`, e.g. `*384*123#`) on any phone to book. The menu goes: town → destination → today, tomorrow or the day after → bus → number of seats (up to 4) → name and NRC for each passenger → confirm. Seats are assigned automatically, and payment is a mobile money prompt on the same number (MTN, Airtel or Zamtel, detected from the number). Towns are listed busiest first, with paging.
+- The same menu has: my upcoming tickets, bus status by booking reference (only for the number that booked), and language.
+- SMS commands to your inbound number: `STATUS MT4K9P2Q`, `TICKETS`, `HELP`.
+- Gateway callbacks follow the Africa's Talking format: `POST /api/ussd` and `POST /api/sms/inbound`. In production set `USSD_SECRET` and register the URLs with `?key=<secret>`.
+- Development simulator at `/ussd.html` (disabled in production).
+
+**Loyalty points**
+- Passengers earn 1 point per K10 of fare once a trip is completed, and spend them at checkout (100 points = K10, up to 50% of a fare). The admin sets all three numbers.
+- The platform pays for points, so bus companies still receive their full fare. Points come back if the booking is cancelled or expires unpaid. The balance and history are in My trips.
+
+**Luggage charges**
+- Each company sets a price per bag, sack, container, box, crate and other item, and how many bags ride free (default 1). The charge is added to the ticket total and printed on the ticket. It goes to the company in full, with no commission, and is fully refunded if the booking is cancelled.
+
+**Maintenance and compliance**
+- The odometer goes up by the route distance after each trip. You can record a service, repair, tyres or an RTSA inspection with cost and notes; a service resets the counter.
+- Expiry dates for the RTSA certificate of fitness, insurance, road tax and driver licences.
+- The Maintenance page lists what is overdue, due within 14 days or 1,000 km, or not recorded. The dashboard shows an alert, and each affected trip gets a red warning. The company owner gets one SMS summary a day.
+
+**Languages**
+- The passenger website, SMS messages and the USSD menu are available in English, Ichibemba, Chinyanja and Chitonga. The choice is remembered on the account, on the booking (so trip alerts arrive in the same language) and per phone number for USSD.
+- **The Bemba, Nyanja and Tonga texts are draft translations. Have native speakers review `web/js/i18n.js` and `server/i18n.js` before launch.** Staff and admin screens are English only.
+
 ## How the important parts work
 
 **No double booking.** Two layers:
@@ -107,6 +130,8 @@ These parts run in **sandbox** until you configure them. The app says so in the 
 | SMS | Africa's Talking adapter | Set `AT_USERNAME`, `AT_API_KEY` and an approved `AT_SENDER_ID` |
 | WhatsApp | WhatsApp Cloud API adapter (text messages) | Set `WA_TOKEN`, `WA_PHONE_NUMBER_ID`. Messages outside the 24-hour customer window need approved templates |
 | Email | Posts to a webhook | Set `EMAIL_WEBHOOK_URL` to your mail relay |
+| USSD & inbound SMS | Menu and SMS commands implemented (Africa's Talking request format) | Rent a USSD code and inbound number from Africa's Talking or your aggregator. Point them at `/api/ussd?key=…` and `/api/sms/inbound?key=…` and set `USSD_SECRET` and `USSD_CODE` |
+| Translations | Drafts | Native-speaker review of Bemba, Nyanja and Tonga |
 | Refund and operator payouts | Tracked and approved in the admin portal, then **paid out manually** | Wire up the providers' disbursement APIs if you want them automatic |
 | Maps | OpenStreetMap tiles via Leaflet | Fine to start with. For heavy traffic use a paid tile provider (OSM's tile servers have a usage policy) |
 

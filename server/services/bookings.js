@@ -7,6 +7,9 @@ import { seatChanged } from './events.js';
 import { notifyContact } from './notify.js';
 import { ticketUrl } from './tickets.js';
 import { normLuggage, LUGGAGE_SQL } from './luggage.js';
+import { checkRedeem, maxRedeemable, pointsValue, restorePoints, awardPoints } from './loyalty.js';
+import { logTripKm } from './maintenance.js';
+import { t as tr, langFor } from '../i18n.js';
 import { providers } from './payments/providers.js';
 
 const cur = n => `K${Number(n).toFixed(2)}`;
@@ -45,7 +48,7 @@ function validatePassengers(passengers, layout) {
  *  channel web     → pending_payment (expires with the hold) or reserved (pay at station, 30 min)
  *  channel counter/agent with cash → confirmed immediately
  */
-export function createBookings(db, { legs, contact, promo_code, payment_method, user, channel = 'web' }) {
+export function createBookings(db, { legs, contact, promo_code, payment_method, user, channel = 'web', redeem_points = 0, lang, source = null }) {
   if (!Array.isArray(legs) || legs.length < 1 || legs.length > 2) throw bad('A booking has one or two legs (outbound and return).');
   if (!PAY_METHODS.includes(payment_method)) throw bad('Choose a payment method.');
   if (payment_method === 'cash' && channel === 'web') throw bad('Cash is only accepted at the station counter.');
@@ -57,6 +60,8 @@ export function createBookings(db, { legs, contact, promo_code, payment_method, 
   const groupRef = ref('G', 8);
   const now = new Date();
   const reserveMin = Number(setting(db, 'reserve_minutes'));
+  const language = langFor(db, { lang, user, phone });
+  let pointsLeft = checkRedeem(db, user, redeem_points);
   const out = tx(db, () => {
     const created = [];
     for (const leg of legs) {
@@ -80,13 +85,20 @@ export function createBookings(db, { legs, contact, promo_code, payment_method, 
         : status === 'reserved' ? addMinutes(now, reserveMin).toISOString()
         : addMinutes(now, Number(setting(db, 'hold_minutes'))).toISOString();
       if (status === 'reserved' && addMinutes(now, reserveMin) > new Date(trip.depart_at)) throw bad('Pay-at-station is not available this close to departure. Pay by mobile money or card.');
+      // Loyalty points (platform-funded): spread over the legs, each capped at the max % of its fare.
+      const ptsUsed = pointsLeft ? maxRedeemable(db, price.fare_total - price.discount, pointsLeft) : 0;
+      const ptsDisc = pointsValue(db, ptsUsed);
+      pointsLeft -= ptsUsed;
+      const total = money(price.total - ptsDisc);
       const bookingRef = ref('MT', 6);
       const b = db.prepare(`INSERT INTO bookings (ref, group_ref, user_id, created_by, trip_id, operator_id, channel, status, from_stop_id, to_stop_id,
-          contact_name, contact_phone, contact_email, fare_total, discount, booking_fee, total, commission, promo_code, payment_method, expires_at, confirmed_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).get(
+          contact_name, contact_phone, contact_email, fare_total, discount, booking_fee, total, commission, promo_code, payment_method, expires_at, confirmed_at,
+          luggage_fee, points_used, points_discount, lang, source)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).get(
         bookingRef, groupRef, user?.role === 'passenger' ? user.id : null, user?.id ?? null, trip.id, trip.operator_id, channel, status, from.id, to.id,
-        contact.name.trim(), phone, email, price.fare_total, price.discount, price.booking_fee, price.total, price.commission,
-        promo?.code ?? null, payment_method, expires, status === 'confirmed' ? now.toISOString() : null);
+        contact.name.trim(), phone, email, price.fare_total, price.discount, price.booking_fee, total, price.commission,
+        promo?.code ?? null, payment_method, expires, status === 'confirmed' ? now.toISOString() : null, price.luggage_fee, ptsUsed, ptsDisc, language, source);
+      if (ptsUsed) db.prepare("INSERT INTO loyalty_ledger (user_id, booking_id, points, kind, note) VALUES (?,?,?,'redeem',?)").run(user.id, b.id, -ptsUsed, `Used on ${bookingRef}`);
       const insSeat = db.prepare(`INSERT INTO booking_seats (booking_id, trip_id, seat_no, passenger_name, id_type, id_number, gender, is_child, fare, ${LUGGAGE_SQL}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
       leg.passengers.forEach((p, i) => {
         try { insSeat.run(b.id, trip.id, String(p.seat_no), p.name.trim(), p.id_type, p.id_number.trim().toUpperCase(), p.gender || null, p.is_child ? 1 : 0, price.seat_fares[i], ...p._lug); }
@@ -94,7 +106,7 @@ export function createBookings(db, { legs, contact, promo_code, payment_method, 
       });
       db.prepare('DELETE FROM seat_holds WHERE trip_id = ? AND hold_token = ?').run(trip.id, leg.hold_token);
       if (promo) db.prepare('UPDATE pricing_rules SET used = used + 1 WHERE id = ?').run(promo.id);
-      created.push({ ref: bookingRef, trip_id: trip.id, status, total: price.total, expires_at: expires, price });
+      created.push({ ref: bookingRef, trip_id: trip.id, status, total, expires_at: expires, price, points_used: ptsUsed, points_discount: ptsDisc });
     }
     return created;
   });
@@ -103,9 +115,9 @@ export function createBookings(db, { legs, contact, promo_code, payment_method, 
   if (out[0].status === 'confirmed') sendTickets(db, groupRef);
   if (out[0].status === 'reserved') {
     notifyContact(db, { phone, email, kind: 'reserved', subject: 'Seat reserved',
-      body: `MyTicket: Seats reserved, ref ${out.map(b => b.ref).join(' + ')}. Pay ${cur(total)} at the ${groupStation(db, groupRef)} counter by ${localTime(out[0].expires_at)} or the reservation is released.` });
+      body: tr(language, 'sms.reserved', { refs: out.map(b => b.ref).join(' + '), amount: cur(total), company: groupStation(db, groupRef), time: localTime(out[0].expires_at) }) });
   }
-  return { group_ref: groupRef, total, bookings: out };
+  return { group_ref: groupRef, total, bookings: out, points_used: out.reduce((a, b) => a + b.points_used, 0) };
 }
 
 function groupStation(db, groupRef) {
@@ -194,7 +206,7 @@ export function sendTickets(db, groupRef) {
     const seats = db.prepare('SELECT seat_no FROM booking_seats WHERE booking_id = ? AND active = 1').all(b.id).map(s => s.seat_no).join(', ');
     const at = addMinutes(t.depart_at, t.offset_min + t.delay_min);
     notifyContact(db, { phone: b.contact_phone, email: b.contact_email, kind: 'ticket', subject: `Your ticket ${b.ref}`,
-      body: `MyTicket: Booking ${b.ref} confirmed. ${t.city} to ${t.to_city}, ${localDate(at)} ${localTime(at)}, seat ${seats}. Board at ${t.terminal}. Ticket and QR code: ${ticketUrl(b.ref)}` });
+      body: tr(b.lang, 'sms.ticket', { ref: b.ref, from: t.city, to: t.to_city, date: localDate(at), time: localTime(at), seats, terminal: t.terminal, url: ticketUrl(b.ref) }) });
   }
 }
 
@@ -209,12 +221,13 @@ export function cancelBooking(db, booking, { by, reason, full = false }) {
     db.prepare("UPDATE bookings SET status='cancelled', cancelled_at=datetime('now'), expires_at=NULL WHERE id=?").run(booking.id);
     db.prepare('UPDATE booking_seats SET active = 0 WHERE booking_id = ?').run(booking.id);
     if (amount > 0) db.prepare('INSERT INTO refunds (booking_id, amount, reason) VALUES (?,?,?)').run(booking.id, amount, reason);
+    restorePoints(db, booking, `Cancelled ${booking.ref}`);
     db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?,?,?,?,?)').run(by?.id ?? null, 'cancel', 'booking', booking.ref, reason);
   });
   seatChanged(booking.trip_id);
   notifyContact(db, { phone: booking.contact_phone, email: booking.contact_email, kind: 'cancelled', subject: `Booking ${booking.ref} cancelled`,
-    body: `MyTicket: Booking ${booking.ref} is cancelled.${amount > 0 ? ` Refund of ${cur(amount)} goes back to your ${booking.payment_method === 'card' ? 'card' : 'mobile money wallet'} within 3 working days.` : ''}` });
-  return { ref: booking.ref, refund: amount, pct: full ? 100 : q.pct };
+    body: tr(booking.lang, amount > 0 ? 'sms.cancelled_refund' : 'sms.cancelled', { ref: booking.ref, amount: cur(amount) }) });
+  return { ref: booking.ref, refund: amount, pct: full ? 100 : q.pct, points_restored: booking.points_used || 0 };
 }
 
 /**
@@ -237,10 +250,12 @@ export function rescheduleBooking(db, booking, { trip_id, hold_token, seats, use
   validatePassengers(passengers, layoutForTrip(db, newTrip.id));
   const terms = operatorTerms(db, booking.operator_id);
   const price = priceLeg(db, { trip: newTrip, fromStop: from, toStop: to, passengers, promo: null });
-  const credit = money(booking.fare_total - booking.discount);
-  const applied = Math.min(credit, price.fare_total);
-  const leftover = money(credit - applied);
-  const total = money(price.fare_total - applied + terms.rescheduleFee);
+  // Credit = fare (including any part paid with points) + luggage already paid. Points value is never paid out as cash.
+  const credit = money(booking.fare_total - booking.discount + (booking.luggage_fee || 0));
+  const newCost = money(price.fare_total + price.luggage_fee);
+  const applied = Math.min(credit, newCost);
+  const leftover = money(Math.max(0, credit - applied - (booking.points_discount || 0)));
+  const total = money(newCost - applied + terms.rescheduleFee);
   const now = new Date();
   const newRef = ref('MT', 6);
   const result = tx(db, () => {
@@ -248,11 +263,11 @@ export function rescheduleBooking(db, booking, { trip_id, hold_token, seats, use
     if (seats.some(s => !heldNos.has(String(s)))) throw conflict('Your seat selection expired. Pick your seats again.', 'hold_expired');
     const status = total > 0 ? 'pending_payment' : 'confirmed';
     const b = db.prepare(`INSERT INTO bookings (ref, group_ref, user_id, created_by, trip_id, operator_id, channel, status, from_stop_id, to_stop_id, contact_name, contact_phone, contact_email,
-        fare_total, discount, booking_fee, total, commission, payment_method, expires_at, rescheduled_from, confirmed_at)
-      VALUES (?,?,?,?,?,?,'web',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).get(newRef, ref('G', 8), booking.user_id, user?.id ?? null, newTrip.id, newTrip.operator_id, status,
+        fare_total, discount, booking_fee, total, commission, payment_method, expires_at, rescheduled_from, confirmed_at, luggage_fee, lang)
+      VALUES (?,?,?,?,?,?,'web',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).get(newRef, ref('G', 8), booking.user_id, user?.id ?? null, newTrip.id, newTrip.operator_id, status,
       from.id, to.id, booking.contact_name, booking.contact_phone, booking.contact_email, price.fare_total, applied, terms.rescheduleFee, total,
       money((price.fare_total) * terms.commissionPct / 100), booking.payment_method, status === 'confirmed' ? null : addMinutes(now, Number(setting(db, 'hold_minutes'))).toISOString(),
-      booking.id, status === 'confirmed' ? now.toISOString() : null);
+      booking.id, status === 'confirmed' ? now.toISOString() : null, price.luggage_fee, booking.lang || 'en');
     const ins = db.prepare(`INSERT INTO booking_seats (booking_id, trip_id, seat_no, passenger_name, id_type, id_number, gender, is_child, fare, ${LUGGAGE_SQL}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
     passengers.forEach((p, i) => ins.run(b.id, newTrip.id, String(p.seat_no), p.name, p.id_type, p.id_number, p.gender, p.is_child ? 1 : 0, price.seat_fares[i], ...p._lug));
     db.prepare('DELETE FROM seat_holds WHERE trip_id = ? AND hold_token = ?').run(newTrip.id, hold_token);
@@ -281,6 +296,7 @@ export function sweep(db) {
         const inFlight = db.prepare("SELECT 1 FROM payments p JOIN bookings b ON b.group_ref = p.group_ref WHERE b.id = ? AND p.status = 'initiated' AND p.created_at > datetime('now','-10 minutes')").get(b.id);
         if (inFlight) continue;
         db.prepare("UPDATE bookings SET status='expired' WHERE id=?").run(b.id);
+        restorePoints(db, db.prepare('SELECT * FROM bookings WHERE id = ?').get(b.id), 'Booking expired unpaid');
         db.prepare('UPDATE booking_seats SET active = 0 WHERE booking_id = ?').run(b.id);
       }
     });
@@ -289,4 +305,6 @@ export function sweep(db) {
   db.prepare(`UPDATE bookings SET status='completed' WHERE status='confirmed' AND trip_id IN (
       SELECT tr.id FROM trips tr JOIN routes r ON r.id = tr.route_id
       WHERE tr.status = 'arrived' OR datetime(tr.depart_at, '+' || (r.duration_min + tr.delay_min + 360) || ' minutes') < datetime('now'))`).run();
+  awardPoints(db);
+  logTripKm(db);
 }

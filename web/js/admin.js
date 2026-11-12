@@ -20,7 +20,7 @@ async function overview(main, days = 30) {
     ${a.pending_operators || a.open_disputes ? html`<div class="notice">${a.pending_operators ? html`<a href="#/admin/operators">${a.pending_operators} bus compan${a.pending_operators > 1 ? 'ies' : 'y'} waiting for approval</a>. ` : ''}${a.open_disputes ? html`<a href="#/admin/disputes">${a.open_disputes} open complaint${a.open_disputes > 1 ? 's' : ''}</a>.` : ''}</div>` : ''}
     <div class="kpis">
       <div class="kpi"><span class="label">Gross merchandise value</span><b>${kw0(t.gmv)}</b><span class="small muted">paid by passengers</span></div>
-      <div class="kpi"><span class="label">Platform revenue</span><b>${kw0(t.revenue)}</b><span class="small muted">commission + booking fees</span></div>
+      <div class="kpi"><span class="label">Platform revenue</span><b>${kw0(t.revenue)}</b><span class="small muted">commission + booking fees − points</span></div>
       <div class="kpi"><span class="label">Bookings</span><b>${t.bookings.toLocaleString()}</b><span class="small muted">${t.seats.toLocaleString()} seats</span></div>
       <div class="kpi"><span class="label">Registered passengers</span><b>${a.total_passengers.toLocaleString()}</b><span class="small muted">+${a.user_growth.reduce((x, d) => x + d.n, 0)} in period</span></div>
     </div>
@@ -30,7 +30,7 @@ async function overview(main, days = 30) {
       <div class="card"><h3>Bus companies</h3><div class="tablewrap"><table><thead><tr><th>Company</th><th class="r">Bookings</th><th class="r">GMV</th><th class="r">Our revenue</th></tr></thead><tbody>${a.operators.map(o => html`<tr><td>${o.name}</td><td class="r num">${o.bookings}</td><td class="r num">${kw0(o.gmv)}</td><td class="r num">${kw0(o.revenue)}</td></tr>`)}</tbody></table></div></div>
       <div class="card"><h3>Seasonality (by month)</h3>${raw(bars(a.monthly.map(m => ({ label: m.month, value: m.gmv })), { fmt: kw0 }))}</div>
       <div class="card"><h3>Sales channels & payment methods</h3><div class="tablewrap"><table><tbody>
-        ${a.channels.map(c => html`<tr><td>${{ web: 'Online', counter: 'Station counter', agent: 'Conductor' }[c.channel]}</td><td class="r num">${c.n}</td></tr>`)}
+        ${a.channels.map(c => html`<tr><td>${{ web: 'Online', counter: 'Station counter', agent: 'Conductor', ussd: 'USSD (basic phones)' }[c.channel] || c.channel}</td><td class="r num">${c.n}</td></tr>`)}
         ${a.payment_methods.map(p => html`<tr><td>${p.provider.toUpperCase()}</td><td class="r num">${p.ok} ok${p.failed ? html` · <span style="color:var(--bad)">${p.failed} failed</span>` : ''}</td></tr>`)}</tbody></table></div></div>
     </div>`;
   $('#days', main).addEventListener('change', e => overview(main, Number(e.target.value)));
@@ -140,6 +140,12 @@ async function fees(main) {
       <label class="field"><span>Commission on fares (%)</span><input name="commission_pct" type="number" step="0.1" min="0" max="30" value="${s.commission_pct}"></label>
       <label class="field"><span>Seat lock during checkout (minutes, 5–15)</span><input name="hold_minutes" type="number" min="5" max="15" value="${s.hold_minutes}"></label>
       <label class="field"><span>Pay-at-station reservation (minutes)</span><input name="reserve_minutes" type="number" min="10" max="120" value="${s.reserve_minutes}"></label></div>
+      <h3>Loyalty points</h3><p class="small muted" style="margin:0">Paid for by the platform: bus companies still receive their full fare. Set points per kwacha to 0 to stop new earning.</p>
+      <div class="grid3">
+        <label class="field"><span>Points earned per K1 of fare</span><input name="loyalty_points_per_kwacha" type="number" step="0.01" min="0" max="1" value="${s.loyalty_points_per_kwacha}"></label>
+        <label class="field"><span>Value of 1 point (K)</span><input name="loyalty_point_value" type="number" step="0.01" min="0" max="1" value="${s.loyalty_point_value}"></label>
+        <label class="field"><span>Max % of a fare paid with points</span><input name="loyalty_max_pct" type="number" min="0" max="100" value="${s.loyalty_max_pct}"></label></div>
+      <div class="small muted">Now: 1 point per K${s.loyalty_points_per_kwacha ? Math.round(1 / s.loyalty_points_per_kwacha) : '—'} spent; 100 points = ${kwacha(100 * s.loyalty_point_value)}.</div>
       <div class="small muted">Default refund policy: ${s.refund_policy.map(t => `${t.pct}% if ${t.hours}h+ before`).join(', ')}. Companies set their own.</div>
       <div><button class="btn">Save</button></div></form>`;
   const f = $('#ff', main);

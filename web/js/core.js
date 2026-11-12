@@ -75,7 +75,7 @@ const STATUS = {
   scheduled: 'idle', boarding: 'info', departed: 'ok', delayed: 'warn', arrived: 'idle',
   approved: 'ok', pending: 'warn', suspended: 'bad', rejected: 'bad', verified: 'ok', submitted: 'warn',
   open: 'warn', resolved: 'ok', requested: 'warn', paid: 'ok', failed: 'bad', success: 'ok', initiated: 'info',
-  active: 'ok', maintenance: 'warn', retired: 'idle', received: 'info', loaded: 'info', in_transit: 'info', collected: 'ok', sent: 'ok', queued: 'warn',
+  active: 'ok', maintenance: 'warn', retired: 'idle', overdue: 'bad', soon: 'warn', 'not set': 'idle', received: 'info', loaded: 'info', in_transit: 'info', collected: 'ok', sent: 'ok', queued: 'warn',
 };
 export const pill = s => html`<span class="pill ${STATUS[s] || 'idle'}">${String(s).replace(/_/g, ' ')}</span>`;
 
