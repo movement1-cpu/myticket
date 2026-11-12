@@ -4,13 +4,14 @@ import { hashPassword, verifyPassword, issueToken, requireRole } from '../auth.j
 import { bad, notFound, forbidden, conflict, normPhone, required, isDate, HttpError, localDate } from '../util.js';
 import { searchTrips, tripRow, routeStops, tripPosition, ensureTrips } from '../services/trips.js';
 import { seatMap, holdSeats, releaseHold } from '../services/seats.js';
-import { priceLeg, findPromo, refundQuote } from '../services/pricing.js';
+import { priceLeg, findPromo, refundQuote, adultFare } from '../services/pricing.js';
 import { createBookings, startPayment, checkPayment, cancelBooking, rescheduleBooking, groupBookings } from '../services/bookings.js';
 import { ticketData, ticketPdf, qrSvg, validKey } from '../services/tickets.js';
 import { providers } from '../services/payments/providers.js';
 import { bus } from '../services/events.js';
 import { pointsBalance, loyaltyTerms } from '../services/loyalty.js';
 import { LANGS } from '../i18n.js';
+import { joinWaitlist, getOffer } from '../services/waitlist.js';
 import { config } from '../config.js';
 
 const list = v => v == null || v === '' ? [] : Array.isArray(v) ? v : String(v).split(',');
@@ -99,8 +100,15 @@ export default function publicRoutes(db) {
       min_price: req.query.min_price || null, max_price: req.query.max_price || null };
     const sort = req.query.sort || 'depart';
     const sorter = { depart: (a, b) => a.depart_at.localeCompare(b.depart_at), price: (a, b) => a.fare - b.fare, rating: (a, b) => (b.rating?.avg || 0) - (a.rating?.avg || 0), seats: (a, b) => b.seats_left - a.seats_left }[sort];
-    const outbound = searchTrips(db, { from, to, date, filters }).sort(sorter);
-    const ret = return_date ? searchTrips(db, { from: to, to: from, date: return_date, filters }).sort(sorter) : null;
+    // Show the fare passengers will actually pay (peak, demand and early-booking adjustments included).
+    const live = list => list.map(r => {
+      const trip = db.prepare('SELECT tr.*, ro.distance_km FROM trips tr JOIN routes ro ON ro.id = tr.route_id WHERE tr.id = ?').get(r.trip_id);
+      const st = id => db.prepare('SELECT * FROM route_stops WHERE id = ?').get(id);
+      const a = adultFare(db, trip, st(r.boarding_points[0].stop_id), st(r.dropping_points[0].stop_id));
+      return { ...r, fare: a.fare, base_fare: a.base, demand_pct: a.demand, early_pct: a.early, peak_pct: a.peak };
+    }).filter(r => (filters.min_price == null || r.fare >= Number(filters.min_price)) && (filters.max_price == null || r.fare <= Number(filters.max_price)));
+    const outbound = live(searchTrips(db, { from, to, date, filters: { ...filters, min_price: null, max_price: null } })).sort(sorter);
+    const ret = return_date ? live(searchTrips(db, { from: to, to: from, date: return_date, filters: { ...filters, min_price: null, max_price: null } })).sort(sorter) : null;
     res.json({ outbound, return: ret });
   });
 
@@ -125,6 +133,20 @@ export default function publicRoutes(db) {
 
   r.post('/trips/:id/holds', (req, res) => {
     res.json(holdSeats(db, { tripId: Number(req.params.id), seats: req.body.seats, token: req.body.hold_token, userId: req.user?.id }));
+  });
+  /* ---------- waitlist for full buses ---------- */
+  r.post('/trips/:id/waitlist', (req, res) => {
+    required(req.body, ['seats', 'name', 'phone', 'from_stop_id', 'to_stop_id']);
+    res.status(201).json(joinWaitlist(db, { tripId: Number(req.params.id), fromStopId: Number(req.body.from_stop_id), toStopId: Number(req.body.to_stop_id),
+      seats: req.body.seats, name: req.body.name, phone: req.body.phone, user: req.user, lang: req.body.lang }));
+  });
+  r.get('/waitlist/offer/:id', (req, res) => {
+    const o = getOffer(db, Number(req.params.id), String(req.query.k || ''));
+    const t = tripRow(db, o.trip_id);
+    const stops = routeStops(db, t.route_id);
+    const view = s => ({ stop_id: s.id, terminal: s.terminal, city: s.city, time: new Date(new Date(t.depart_at).getTime() + (s.offset_min + t.delay_min) * 60000).toISOString(), map_url: `https://www.google.com/maps?q=${s.lat},${s.lng}` });
+    res.json({ ...o, trip: { trip_id: t.id, operator: t.operator_name, class: t.class, plate: t.plate, depart_at: t.depart_at,
+      boarding_points: stops.filter(s => s.id === o.from_stop_id).map(view), dropping_points: stops.filter(s => s.id === o.to_stop_id).map(view) } });
   });
   r.delete('/holds/:token', (req, res) => { releaseHold(db, req.params.token); res.json({ ok: true }); });
 

@@ -140,6 +140,9 @@ async function fees(main) {
       <label class="field"><span>Commission on fares (%)</span><input name="commission_pct" type="number" step="0.1" min="0" max="30" value="${s.commission_pct}"></label>
       <label class="field"><span>Seat lock during checkout (minutes, 5–15)</span><input name="hold_minutes" type="number" min="5" max="15" value="${s.hold_minutes}"></label>
       <label class="field"><span>Pay-at-station reservation (minutes)</span><input name="reserve_minutes" type="number" min="10" max="120" value="${s.reserve_minutes}"></label></div>
+      <h3>Passenger reminders and waitlist</h3><div class="grid2">
+        <label class="field"><span>SMS reminder before departure (hours, 0 = off)</span><input name="reminder_hours" type="number" min="0" max="24" value="${s.reminder_hours}"></label>
+        <label class="field"><span>Hold freed seats for the next person on the waitlist (minutes)</span><input name="waitlist_offer_minutes" type="number" min="10" max="120" value="${s.waitlist_offer_minutes}"></label></div>
       <h3>Loyalty points</h3><p class="small muted" style="margin:0">Paid for by the platform: bus companies still receive their full fare. Set points per kwacha to 0 to stop new earning.</p>
       <div class="grid3">
         <label class="field"><span>Points earned per K1 of fare</span><input name="loyalty_points_per_kwacha" type="number" step="0.01" min="0" max="1" value="${s.loyalty_points_per_kwacha}"></label>

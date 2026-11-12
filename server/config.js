@@ -14,6 +14,8 @@ export const config = {
   baseUrl: env.BASE_URL || `http://localhost:${env.PORT || 3000}`,
   dbFile: env.DB_FILE || path.resolve('data/myticket.db'),
   uploadDir: env.UPLOAD_DIR || path.resolve('data/uploads'),
+  backupDir: env.BACKUP_DIR === '' ? null : (env.BACKUP_DIR || path.resolve('data/backups')),
+  backupKeepDays: Number(env.BACKUP_KEEP_DAYS || 14),
   secret: env.APP_SECRET || crypto.createHash('sha256').update('dev-only-secret').digest('hex'),
   currency: env.CURRENCY || 'ZMW',
   ussdSecret: env.USSD_SECRET || null,

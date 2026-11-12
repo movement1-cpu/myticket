@@ -3,16 +3,19 @@ import { money, bad, localDate } from '../util.js';
 import { segmentFare } from './trips.js';
 import { normLuggage, LUGGAGE_KINDS } from './luggage.js';
 
+/** Demand-based pricing, set per company. Off by default. */
+export const DEFAULT_DYNAMIC = { enabled: false, tiers: [{ occupancy: 60, pct: 10 }, { occupancy: 85, pct: 20 }], early_days: 14, early_pct: 10 };
 export const DEFAULT_LUGGAGE_FEES = { bags: 0, sacks: 0, containers: 0, boxes: 0, crates: 0, other: 0, free_bags: 1 };
 
 export function operatorTerms(db, operatorId) {
-  const o = db.prepare('SELECT commission_pct, booking_fee, refund_policy, reschedule_fee, luggage_fees FROM operators WHERE id = ?').get(operatorId);
+  const o = db.prepare('SELECT commission_pct, booking_fee, refund_policy, reschedule_fee, luggage_fees, dynamic_pricing FROM operators WHERE id = ?').get(operatorId);
   return {
     commissionPct: o?.commission_pct ?? Number(setting(db, 'commission_pct')),
     bookingFee: o?.booking_fee ?? Number(setting(db, 'booking_fee')),
     refundPolicy: JSON.parse(o?.refund_policy || setting(db, 'refund_policy')),
     rescheduleFee: o?.reschedule_fee ?? 20,
     luggageFees: { ...DEFAULT_LUGGAGE_FEES, ...JSON.parse(o?.luggage_fees || '{}') },
+    dynamic: { ...DEFAULT_DYNAMIC, ...JSON.parse(o?.dynamic_pricing || '{}') },
   };
 }
 
@@ -37,14 +40,35 @@ export function findPromo(db, code, operatorId) {
  *   luggage   = per item, set by the operator (first `free_bags` bags per passenger free); goes to the
  *               operator in full, no commission
  */
-export function priceLeg(db, { trip, fromStop, toStop, passengers, promo }) {
+/**
+ * Adult fare for one seat right now: segment fare adjusted by
+ *   peak surcharge (date rules) + demand surcharge (how full the bus is) − early-booking discount.
+ */
+export function adultFare(db, trip, fromStop, toStop) {
   const base = segmentFare(trip, fromStop, toStop);
   const rules = db.prepare(`SELECT * FROM pricing_rules WHERE operator_id = ? AND active = 1 AND kind IN ('peak','child')
       AND (start_date IS NULL OR start_date <= ?) AND (end_date IS NULL OR end_date >= ?)`).all(trip.operator_id, trip.service_date, trip.service_date);
   const peak = Math.max(0, ...rules.filter(r => r.kind === 'peak').map(r => r.pct));
   const child = Math.max(0, ...rules.filter(r => r.kind === 'child').map(r => r.pct));
-  const adultFare = Math.round(base * (1 + peak / 100) / 5) * 5;
-  const seatFares = passengers.map(p => money(p.is_child ? adultFare * (1 - child / 100) : adultFare));
+  const dyn = operatorTerms(db, trip.operator_id).dynamic;
+  let demand = 0, early = 0, occupancy = 0;
+  if (dyn.enabled) {
+    const cap = db.prepare('SELECT l.capacity FROM buses b JOIN layouts l ON l.id = b.layout_id WHERE b.id = ?').get(trip.bus_id)?.capacity || 1;
+    const sold = db.prepare('SELECT COUNT(*) n FROM booking_seats WHERE trip_id = ? AND active = 1').get(trip.id).n;
+    occupancy = Math.round(sold / cap * 100);
+    demand = Math.max(0, ...dyn.tiers.filter(t => occupancy >= t.occupancy).map(t => t.pct));
+    const daysAhead = Math.round((new Date(trip.service_date + 'T00:00:00Z') - new Date(localDate() + 'T00:00:00Z')) / 864e5);
+    if (dyn.early_days && daysAhead >= dyn.early_days) early = dyn.early_pct;
+  }
+  const fare = Math.max(5, Math.round(base * (1 + (peak + demand - early) / 100) / 5) * 5);
+  return { base, fare, peak, demand, early, child, occupancy };
+}
+
+export function priceLeg(db, { trip, fromStop, toStop, passengers, promo }) {
+  const a = adultFare(db, trip, fromStop, toStop);
+  const { base, peak, child } = a;
+  const adultFare_ = a.fare;
+  const seatFares = passengers.map(p => money(p.is_child ? adultFare_ * (1 - child / 100) : adultFare_));
   const fareTotal = money(seatFares.reduce((a, b) => a + b, 0));
   const discount = promo ? money(fareTotal * promo.pct / 100) : 0;
   const terms = operatorTerms(db, trip.operator_id);
@@ -52,7 +76,7 @@ export function priceLeg(db, { trip, fromStop, toStop, passengers, promo }) {
   const luggageFees = passengers.map((p, i) => luggageCharge(terms.luggageFees, Array.isArray(p._lug) ? p._lug : normLuggage(p.luggage, `passenger ${i + 1}`)));
   const luggageFee = money(luggageFees.reduce((a, b) => a + b, 0));
   return {
-    base, peak_pct: peak, child_pct: child, adult_fare: adultFare, seat_fares: seatFares,
+    base, peak_pct: peak, child_pct: child, demand_pct: a.demand, early_pct: a.early, occupancy: a.occupancy, adult_fare: adultFare_, seat_fares: seatFares,
     fare_total: fareTotal, discount, booking_fee: terms.bookingFee, commission,
     luggage_fee: luggageFee, luggage_fees: luggageFees, luggage_rates: terms.luggageFees,
     total: money(fareTotal - discount + luggageFee + terms.bookingFee),

@@ -485,3 +485,113 @@ test('maintenance: due items, trip warnings, service resets counter, km logged, 
   assert.equal(second, 0, 'one SMS per company per day');
   assert.ok(db.prepare("SELECT 1 FROM notifications WHERE kind = 'maintenance' AND body LIKE '%overdue%'").get());
 });
+
+/* ---------------- v4: demand-based fares, waitlist, reminders, backups ---------------- */
+test('demand-based fares: surcharge by occupancy, early-booking discount, search shows the live fare', async () => {
+  const { adultFare } = await import('../server/services/pricing.js');
+  const tripOf = id => db.prepare('SELECT tr.*, r.distance_km FROM trips tr JOIN routes r ON r.id = tr.route_id WHERE tr.id = ?').get(id);
+  const res = (await api('GET', `/api/search?from=Lusaka&to=Kitwe&date=${addDays(localDate(), 5)}`)).body.outbound;
+  const cbe = res.find(t => t.operator === 'Copperbelt Express');
+  const trip = tripOf(cbe.trip_id);
+  const stop = id => db.prepare('SELECT * FROM route_stops WHERE id = ?').get(id);
+  const a = adultFare(db, trip, stop(cbe.boarding_points[0].stop_id), stop(cbe.dropping_points[0].stop_id));
+  assert.equal(a.early, 10, '5 days ahead ≥ 3 → early discount');
+  assert.equal(cbe.fare, a.fare, 'search shows the same fare checkout charges');
+  // Fill the bus to 80%+ and the surcharge appears.
+  const cap = db.prepare('SELECT l.capacity FROM buses b JOIN layouts l ON l.id = b.layout_id WHERE b.id = ?').get(trip.bus_id).capacity;
+  const bk = db.prepare('SELECT id FROM bookings WHERE trip_id = ? LIMIT 1').get(trip.id)
+    || db.prepare("INSERT INTO bookings (ref, group_ref, trip_id, operator_id, channel, status, from_stop_id, to_stop_id, contact_name, contact_phone, fare_total, booking_fee, total, commission) VALUES ('MTFILL01','GFILL',?,?,'counter','confirmed',?,?,'x','260960000000',0,0,0,0) RETURNING id").get(trip.id, trip.operator_id, cbe.boarding_points[0].stop_id, cbe.dropping_points[0].stop_id);
+  const sold = db.prepare('SELECT COUNT(*) n FROM booking_seats WHERE trip_id = ? AND active = 1').get(trip.id).n;
+  const taken = new Set(db.prepare('SELECT seat_no FROM booking_seats WHERE trip_id = ? AND active = 1').all(trip.id).map(r => r.seat_no));
+  const ins = db.prepare("INSERT INTO booking_seats (booking_id, trip_id, seat_no, passenger_name, id_type, id_number, fare) VALUES (?,?,?,?,'NRC','111111/11/1',0)");
+  let added = 0;
+  for (let n = 1; n <= cap && sold + added < Math.ceil(cap * 0.8); n++) if (!taken.has(String(n))) { ins.run(bk.id, trip.id, String(n), 'Filler'); added++; }
+  const b = adultFare(db, trip, stop(cbe.boarding_points[0].stop_id), stop(cbe.dropping_points[0].stop_id));
+  assert.equal(b.demand, 20);
+  assert.equal(b.fare, Math.max(5, Math.round(b.base * (1 + (b.peak + 20 - 10) / 100) / 5) * 5));
+  const bad = await api('PUT', '/api/operator/profile', { token: tokens.operator, body: { dynamic_pricing: { enabled: true, tiers: [{ occupancy: 150, pct: 10 }] } } });
+  assert.equal(bad.status, 400);
+});
+
+test('waitlist: full bus → join → cancellation frees a seat → first in line gets it held with a pay link', async () => {
+  const { processWaitlist } = await import('../server/services/waitlist.js');
+  const t = await firstTrip();
+  // Fill every free seat with one counter booking.
+  const free = (await api('GET', `/api/trips/${t.trip_id}/seats`)).body.decks.flatMap(d => d.rows.flat()).filter(s => s && s.status === 'available');
+  const legs = [];
+  for (let i = 0; i < free.length; i += 6) {
+    const chunk = free.slice(i, i + 6);
+    const hold = (await api('POST', `/api/trips/${t.trip_id}/holds`, { token: tokens.clerk, body: { seats: chunk.map(s => s.no) } })).body;
+    const r = await api('POST', '/api/counter/bookings', { token: tokens.clerk, body: { legs: [{ trip_id: t.trip_id, hold_token: hold.hold_token, from_stop_id: t.boarding_points[0].stop_id, to_stop_id: t.dropping_points.at(-1).stop_id,
+      passengers: chunk.map((s, k) => ({ ...pax([s.no])[0], gender: s.female ? 'F' : 'M', name: `Filler ${i + k}` })) }], contact: { name: 'Group', phone: '0955111000' }, payment_method: 'cash' } });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    legs.push(r.body.bookings[0].ref);
+  }
+  const early = await api('POST', `/api/trips/${t.trip_id}/waitlist`, { body: { seats: 2, name: 'Wait One', phone: '0961000001', from_stop_id: t.boarding_points[0].stop_id, to_stop_id: t.dropping_points.at(-1).stop_id } });
+  assert.equal(early.status, 201, JSON.stringify(early.body));
+  assert.equal(early.body.position, 1);
+  assert.equal(early.body.status, 'waiting');
+  const second = (await api('POST', `/api/trips/${t.trip_id}/waitlist`, { body: { seats: 1, name: 'Wait Two', phone: '0961000002', from_stop_id: t.boarding_points[0].stop_id, to_stop_id: t.dropping_points.at(-1).stop_id } })).body;
+  assert.equal(second.position, 2);
+  const dup = await api('POST', `/api/trips/${t.trip_id}/waitlist`, { body: { seats: 1, name: 'Again', phone: '0961000001', from_stop_id: t.boarding_points[0].stop_id, to_stop_id: t.dropping_points.at(-1).stop_id } });
+  assert.equal(dup.status, 409);
+
+  // A group booking of 6 is cancelled by the operator → seats free → Wait One (2 seats) and Wait Two (1 seat) are offered.
+  const { cancelBooking } = await import('../server/services/bookings.js');
+  cancelBooking(db, db.prepare('SELECT * FROM bookings WHERE ref = ?').get(legs[0]), { by: null, reason: 'test' });
+  const w1 = db.prepare("SELECT * FROM waitlist WHERE phone = '260961000001'").get();
+  const w2 = db.prepare("SELECT * FROM waitlist WHERE phone = '260961000002'").get();
+  assert.equal(w1.status, 'offered');
+  assert.equal(w2.status, 'offered');
+  const held = db.prepare('SELECT COUNT(*) n FROM seat_holds WHERE hold_token = ?').get(w1.hold_token).n;
+  assert.equal(held, 2);
+  const sms = db.prepare("SELECT body FROM notifications WHERE kind = 'waitlist_offer' AND recipient = '260961000001'").get().body;
+  const link = sms.match(/#\/offer\/(\d+)-(\S+)/);
+  assert.ok(link, sms);
+
+  // The link gives the held seats; booking them marks the waitlist entry booked.
+  const offer = (await api('GET', `/api/waitlist/offer/${link[1]}?k=${link[2]}`)).body;
+  assert.equal(offer.seats.length, 2);
+  assert.equal((await api('GET', `/api/waitlist/offer/${link[1]}?k=wrongkey`)).status, 404);
+  const r = await api('POST', '/api/bookings', { body: { legs: [{ trip_id: t.trip_id, hold_token: offer.hold_token, from_stop_id: offer.from_stop_id, to_stop_id: offer.to_stop_id,
+    passengers: offer.seats.map((s, k) => ({ ...pax([s])[0], gender: 'F', name: `Wait One ${k}` })) }], contact: { name: 'Wait One', phone: '0961000001' }, payment_method: 'mtn' } });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  assert.equal(db.prepare('SELECT status FROM waitlist WHERE id = ?').get(w1.id).status, 'booked');
+
+  // An unanswered offer expires and its seats go to the next person.
+  db.prepare("UPDATE waitlist SET offer_expires = '2000-01-01T00:00:00.000Z' WHERE id = ?").run(w2.id);
+  db.prepare("UPDATE seat_holds SET expires_at = '2000-01-01T00:00:00.000Z' WHERE hold_token = ?").run(w2.hold_token);
+  processWaitlist(db);
+  assert.equal(db.prepare('SELECT status FROM waitlist WHERE id = ?').get(w2.id).status, 'expired');
+});
+
+test('departure reminders: sent once, in the passenger\'s language, not for last-minute bookings', async () => {
+  const { sendDepartureReminders } = await import('../server/services/reminders.js');
+  const b = db.prepare(`SELECT b.id, b.ref FROM bookings b JOIN trips t ON t.id = b.trip_id WHERE b.status = 'confirmed' AND b.reminded_at IS NULL AND t.depart_at > ? ORDER BY t.depart_at LIMIT 1`).get(new Date().toISOString());
+  // Move that trip to 2 hours from now and pretend it was booked yesterday.
+  const trip = db.prepare('SELECT trip_id FROM bookings WHERE id = ?').get(b.id).trip_id;
+  db.prepare('UPDATE trips SET depart_at = ? WHERE id = ?').run(new Date(Date.now() + 2 * 36e5).toISOString(), trip);
+  db.prepare("UPDATE bookings SET lang = 'nya', confirmed_at = datetime('now','-1 day') WHERE id = ?").run(b.id);
+  const n1 = sendDepartureReminders(db), n2 = sendDepartureReminders(db);
+  assert.ok(n1 >= 1);
+  assert.equal(n2, 0);
+  const sms = db.prepare("SELECT body FROM notifications WHERE kind = 'reminder' AND body LIKE ?").get(`%${b.ref}%`);
+  assert.match(sms.body, /Chikumbutso/);
+});
+
+test('backups: snapshot is a working database; old snapshots are pruned; health endpoint checks the DB', async () => {
+  const { config } = await import('../server/config.js');
+  const { backupNow, pruneBackups } = await import('../server/backup.js');
+  config.backupDir = path.join(tmp, 'backups');
+  const file = backupNow(db);
+  const { DatabaseSync } = await import('node:sqlite');
+  const copy = new DatabaseSync(file);
+  assert.ok(copy.prepare('SELECT COUNT(*) n FROM bookings').get().n > 100);
+  copy.close();
+  assert.equal(backupNow(db, { daily: true }), null, 'only one nightly backup per day');
+  fs.writeFileSync(path.join(config.backupDir, 'myticket-2000-01-01T00-00-00.db'), '');
+  fs.writeFileSync(path.join(config.backupDir, 'keep-me.txt'), '');
+  assert.equal(pruneBackups(14), 1);
+  assert.ok(fs.existsSync(path.join(config.backupDir, 'keep-me.txt')), 'never deletes files it did not create');
+  assert.equal((await api('GET', '/api/health')).body.ok, true);
+});

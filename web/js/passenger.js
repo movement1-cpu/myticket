@@ -116,6 +116,8 @@ export async function results(app, params) {
     }
     const s = e.target.closest('[data-stops]');
     if (s) showStops(all[s.dataset.leg].find(t => t.trip_id === Number(s.dataset.stops)));
+    const w = e.target.closest('[data-wait]');
+    if (w) waitlistFlow(all[w.dataset.leg].find(t => t.trip_id === Number(w.dataset.wait)));
   });
   $('#gobtn', app)?.addEventListener('click', start);
   update();
@@ -141,10 +143,44 @@ function tripCard(t, leg) {
       <div class="line">${dur(t.duration_min)}<br><button class="btn ghost sm" data-stops="${t.trip_id}" data-leg="${leg}" type="button">${tr('r.stops')}</button></div>
       <div style="text-align:right"><div class="t">${time(t.arrive_at)}</div><div class="small muted">${t.dropping_points.at(-1).terminal}</div></div>
     </div>
-    <div class="fare"><b class="num">${kw0(t.fare)}</b><div class="small ${low ? '' : 'muted'}" style="${low ? 'color:var(--bad);font-weight:600' : ''}">${tr('r.left', { n: t.seats_left, c: t.capacity })}</div></div>
-    <button class="btn" data-pick="${t.trip_id}" data-leg="${leg}" ${t.seats_left > 0 ? '' : 'disabled'}>${t.seats_left > 0 ? tr('r.select') : tr('r.full')}</button>
+    <div class="fare">${t.early_pct ? html`<span class="tag" style="color:var(--ok);border-color:currentColor">${tr('r.early', { p: t.early_pct })}</span><br>` : ''}${t.demand_pct ? html`<span class="tag" style="color:var(--warn);border-color:currentColor">${tr('r.demand', { p: t.demand_pct })}</span><br>` : ''}<b class="num">${kw0(t.fare)}</b><div class="small ${low ? '' : 'muted'}" style="${low ? 'color:var(--bad);font-weight:600' : ''}">${tr('r.left', { n: t.seats_left, c: t.capacity })}</div></div>
+    ${t.seats_left > 0 ? html`<button class="btn" data-pick="${t.trip_id}" data-leg="${leg}">${tr('r.select')}</button>`
+      : html`<button class="btn ghost" data-wait="${t.trip_id}" data-leg="${leg}">${tr('w.join')}</button>`}
   </article>`;
 }
+function waitlistFlow(trip) {
+  const u = auth.user;
+  const m = modal(html`<h2>${t('w.title')}</h2><p style="margin:0">${t('w.desc')}</p>
+    <form id="wf" class="grid2">
+      <label class="field"><span>${t('w.seats')}</span><select name="seats">${[1, 2, 3, 4, 5, 6].map(n => html`<option>${n}</option>`)}</select></label>
+      <label class="field"><span>${t('s.boarding')}</span><select name="from">${trip.boarding_points.map(s => html`<option value="${s.stop_id}">${time(s.time)} · ${s.terminal}</option>`)}</select></label>
+      <label class="field"><span>${t('c.cname')}</span><input name="name" value="${u?.role === 'passenger' ? u.name : ''}" required></label>
+      <label class="field"><span>${t('c.cphone')}</span><input name="phone" inputmode="tel" value="${u?.role === 'passenger' ? '0' + u.phone.slice(3) : ''}" required></label>
+      <div class="row" style="justify-content:flex-end;grid-column:1/-1"><button type="button" class="btn ghost" data-close>✕</button><button class="btn copper">${t('w.join')}</button></div></form>`);
+  const f = $('#wf', m.el);
+  f.addEventListener('submit', e => { e.preventDefault(); busy(f.querySelector('.copper'), async () => {
+    const v = formData(f);
+    const r = await api(`/trips/${trip.trip_id}/waitlist`, { method: 'POST', body: { seats: Number(v.seats), name: v.name, phone: v.phone, from_stop_id: Number(v.from), to_stop_id: trip.dropping_points.at(-1).stop_id, lang: getLang() } });
+    m.close();
+    toast(r.status === 'offered' ? t('w.offer') : t('w.done', { n: r.position }));
+  }); });
+}
+
+/* ---------- waitlist offer link (from SMS) ---------- */
+export async function offer(app, idKey) {
+  const cut = idKey.indexOf('-');
+  const id = idKey.slice(0, cut), k = idKey.slice(cut + 1);
+  try {
+    const o = await api(`/waitlist/offer/${id}?k=${encodeURIComponent(k)}`);
+    cart.set({ search: { key: '' }, legs: [{ trip: o.trip, from_stop_id: o.from_stop_id, to_stop_id: o.to_stop_id, hold: { token: o.hold_token, seats: o.seats, expires_at: o.expires_at } }],
+      form: { cname: o.contact_name, cphone: '0' + o.phone.slice(3), name0: o.contact_name } });
+    toast(t('w.offer'));
+    location.replace('#/checkout');
+  } catch (e) {
+    app.innerHTML = html`<div class="page" style="max-width:560px;margin:0 auto"><div class="notice bad">${e.message}</div><a class="btn" href="#/">${t('f.search')}</a></div>`;
+  }
+}
+
 function showStops(t) {
   const row = (s, kind) => html`<tr><td>${kind}</td><td><b>${s.terminal}</b>, ${s.city} ${s.kind === 'roadside' ? raw('<span class="tag">roadside</span>') : ''}</td><td class="num">${time(s.time)}</td><td><a href="${s.map_url}" target="_blank" rel="noopener">Map</a></td></tr>`;
   modal(html`<div class="head"><h2>${t.operator} · ${time(t.depart_at)}</h2><button class="btn ghost sm" data-close>Close</button></div>

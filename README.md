@@ -100,6 +100,16 @@ npm test
 - Expiry dates for the RTSA certificate of fitness, insurance, road tax and driver licences.
 - The Maintenance page lists what is overdue, due within 14 days or 1,000 km, or not recorded. The dashboard shows an alert, and each affected trip gets a red warning. The company owner gets one SMS summary a day.
 
+**Departure reminders**
+- An SMS and WhatsApp reminder goes out a set number of hours before boarding (default 3; the admin can change it or set 0 to turn it off). It includes the bus, boarding point, seat and reference, in the passenger's language. It is sent once per booking, and not for bookings made inside the reminder window.
+
+**Waitlist for full buses**
+- On a full bus, passengers tap **Join waitlist** and choose how many seats they need. When seats free up (a cancellation, an unpaid booking expiring, or a trip change), the first person in line gets them **held** for 30 minutes (adjustable) and an SMS link that opens checkout with the seats already reserved. If they don't pay in time, the next person is offered.
+- Operators see "+N waiting" on each trip.
+
+**Demand-based fares** (per company, off by default)
+- Raise the fare as a bus fills, e.g. +10% at 60% full and +20% at 85%, and give an early-booking discount, e.g. −10% for booking 14 or more days ahead. These combine with peak dates. Search results show the live price with a "Filling up" or "Early booking" label. The price is fixed when the passenger books.
+
 **Languages**
 - The passenger website, SMS messages and the USSD menu are available in English, Ichibemba, Chinyanja and Chitonga. The choice is remembered on the account, on the booking (so trip alerts arrive in the same language) and per phone number for USSD.
 - **The Bemba, Nyanja and Tonga texts are draft translations. Have native speakers review `web/js/i18n.js` and `server/i18n.js` before launch.** Staff and admin screens are English only.
@@ -134,6 +144,16 @@ These parts run in **sandbox** until you configure them. The app says so in the 
 | Translations | Drafts | Native-speaker review of Bemba, Nyanja and Tonga |
 | Refund and operator payouts | Tracked and approved in the admin portal, then **paid out manually** | Wire up the providers' disbursement APIs if you want them automatic |
 | Maps | OpenStreetMap tiles via Leaflet | Fine to start with. For heavy traffic use a paid tile provider (OSM's tile servers have a usage policy) |
+
+**Deploy with Docker** (one server, HTTPS by Caddy):
+
+```bash
+cp .env.example .env   # fill in DOMAIN, APP_SECRET, BASE_URL and provider keys
+docker compose up -d
+docker compose exec app node server/create-admin.js "Full Name" 0971234567 'a-password-of-12+-chars'
+```
+
+Data lives in the `myticket-data` volume: the database, uploads and nightly backups in `/data/backups`, 14 days kept (`BACKUP_KEEP_DAYS`). Run `npm run backup` (or `docker compose exec app npm run backup`) for an extra snapshot, and copy `/data/backups` off the server regularly. `GET /api/health` checks the database for uptime monitors. GitHub Actions runs the test suite on every push (`.github/workflows/ci.yml`).
 
 Checklist:
 - Set `NODE_ENV=production`, a long random `APP_SECRET`, `BASE_URL` (used in SMS ticket links) and `PORT`. The app refuses to start in production without `APP_SECRET`.

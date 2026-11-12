@@ -44,6 +44,21 @@ function luggageFeesBody(v) {
   return JSON.stringify(out);
 }
 
+/** Validate demand-based pricing settings. Returns JSON or null (unchanged). */
+function dynamicBody(v) {
+  if (v == null) return null;
+  const tiers = (Array.isArray(v.tiers) ? v.tiers : []).map(t => ({ occupancy: Number(t.occupancy), pct: Number(t.pct) }))
+    .filter(t => t.occupancy || t.pct).sort((a, b) => a.occupancy - b.occupancy);
+  if (tiers.length > 5) throw bad('Use at most 5 demand levels.');
+  for (const t of tiers) {
+    if (!(t.occupancy >= 1 && t.occupancy <= 100)) throw bad('"When the bus is X% full" must be between 1 and 100.');
+    if (!(t.pct >= 0 && t.pct <= 50)) throw bad('Demand surcharges must be between 0% and 50%.');
+  }
+  const earlyDays = Number(v.early_days) || 0, earlyPct = Number(v.early_pct) || 0;
+  if (!(earlyDays >= 0 && earlyDays <= 180) || !(earlyPct >= 0 && earlyPct <= 50)) throw bad('Early booking: up to 180 days ahead and up to 50% off.');
+  return JSON.stringify({ enabled: !!v.enabled, tiers, early_days: earlyDays, early_pct: earlyPct });
+}
+
 export default function operatorRoutes(db) {
   const r = Router();
   const owner = [requireRole('operator')];
@@ -70,9 +85,9 @@ export default function operatorRoutes(db) {
     }
     db.prepare(`UPDATE operators SET contact_phone = COALESCE(?, contact_phone), contact_email = COALESCE(?, contact_email), bank_name = COALESCE(?, bank_name),
       bank_account = COALESCE(?, bank_account), bank_branch = COALESCE(?, bank_branch), pacra_no = COALESCE(?, pacra_no), tpin = COALESCE(?, tpin),
-      refund_policy = COALESCE(?, refund_policy), reschedule_fee = COALESCE(?, reschedule_fee), luggage_fees = COALESCE(?, luggage_fees) WHERE id = ?`)
+      refund_policy = COALESCE(?, refund_policy), reschedule_fee = COALESCE(?, reschedule_fee), luggage_fees = COALESCE(?, luggage_fees), dynamic_pricing = COALESCE(?, dynamic_pricing) WHERE id = ?`)
       .run(b.contact_phone ?? null, b.contact_email ?? null, b.bank_name ?? null, b.bank_account ?? null, b.bank_branch ?? null, b.pacra_no ?? null, b.tpin ?? null,
-        b.refund_policy ? JSON.stringify([...b.refund_policy].sort((x, y) => y.hours - x.hours)) : null, b.reschedule_fee ?? null, luggageFeesBody(b.luggage_fees), req.operatorId);
+        b.refund_policy ? JSON.stringify([...b.refund_policy].sort((x, y) => y.hours - x.hours)) : null, b.reschedule_fee ?? null, luggageFeesBody(b.luggage_fees), dynamicBody(b.dynamic_pricing), req.operatorId);
     audit(req, 'update', 'operator', req.operatorId);
     res.json({ ok: true });
   });
@@ -274,7 +289,8 @@ export default function operatorRoutes(db) {
     ensureTrips(db, date);
     const rows = db.prepare(`SELECT t.*, r.name route_name, b.plate, b.class, l.capacity, d.name driver_name, c.name conductor_name,
         (SELECT COUNT(*) FROM booking_seats bs WHERE bs.trip_id = t.id AND bs.active = 1) booked,
-        (SELECT COUNT(*) FROM booking_seats bs WHERE bs.trip_id = t.id AND bs.active = 1 AND bs.boarded_at IS NOT NULL) boarded
+        (SELECT COUNT(*) FROM booking_seats bs WHERE bs.trip_id = t.id AND bs.active = 1 AND bs.boarded_at IS NOT NULL) boarded,
+        (SELECT COALESCE(SUM(seats), 0) FROM waitlist w WHERE w.trip_id = t.id AND w.status IN ('waiting','offered')) waiting
       FROM trips t JOIN routes r ON r.id = t.route_id JOIN buses b ON b.id = t.bus_id JOIN layouts l ON l.id = b.layout_id
       LEFT JOIN staff d ON d.id = t.driver_id LEFT JOIN staff c ON c.id = t.conductor_id
       WHERE t.operator_id = ? AND t.service_date = ? ORDER BY t.depart_at`).all(req.operatorId, date);

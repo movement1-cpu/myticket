@@ -1,0 +1,30 @@
+# One server: the app plus Caddy, which gets and renews the HTTPS certificate automatically.
+# 1. Point your domain's DNS at the server.  2. cp .env.example .env and fill it in (DOMAIN, APP_SECRET, BASE_URL…).
+# 3. docker compose up -d   4. docker compose exec app node server/create-admin.js "Name" 09XXXXXXXX 'long-password'
+services:
+  app:
+    build: .
+    env_file: .env
+    environment:
+      NODE_ENV: production
+    volumes:
+      - myticket-data:/data
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      DOMAIN: ${DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  myticket-data:
+  caddy-data:

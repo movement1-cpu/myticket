@@ -311,6 +311,21 @@ CREATE TABLE IF NOT EXISTS maintenance_log (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- People waiting for seats on a full bus. When seats free up, the first in line gets them held (status 'offered').
+CREATE TABLE IF NOT EXISTS waitlist (
+  id INTEGER PRIMARY KEY,
+  trip_id INTEGER NOT NULL REFERENCES trips(id),
+  from_stop_id INTEGER NOT NULL REFERENCES route_stops(id),
+  to_stop_id INTEGER NOT NULL REFERENCES route_stops(id),
+  seats INTEGER NOT NULL CHECK (seats BETWEEN 1 AND 6),
+  contact_name TEXT NOT NULL, phone TEXT NOT NULL, lang TEXT NOT NULL DEFAULT 'en',
+  user_id INTEGER REFERENCES users(id),
+  status TEXT NOT NULL DEFAULT 'waiting' CHECK (status IN ('waiting','offered','booked','expired','cancelled')),
+  hold_token TEXT, offer_expires TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS ix_waitlist_trip ON waitlist(trip_id, status);
+
 -- Language preference for phone numbers without an account (USSD / SMS users).
 CREATE TABLE IF NOT EXISTS phone_prefs (phone TEXT PRIMARY KEY, lang TEXT NOT NULL DEFAULT 'en');
 
@@ -326,6 +341,8 @@ const DEFAULT_SETTINGS = {
   commission_pct: '8',          // % of fare kept by platform
   hold_minutes: '10',           // seat lock during checkout
   reserve_minutes: '30',        // pay-at-station hold
+  reminder_hours: '3',              // SMS reminder this many hours before departure (0 = off)
+  waitlist_offer_minutes: '30',     // how long freed seats are held for the next person on the waitlist
   loyalty_points_per_kwacha: '0.1', // 1 point per K10 of fare on completed trips
   loyalty_point_value: '0.1',       // 1 point = K0.10 when redeemed (so 100 points = K10)
   loyalty_max_pct: '50',            // points can pay at most this % of a fare
@@ -366,6 +383,9 @@ function migrate(db) {
   add('buses', 'road_tax_expiry', 'TEXT');
   add('staff', 'licence_expiry', 'TEXT');
   add('trips', 'km_logged', 'INTEGER NOT NULL DEFAULT 0');
+  // v4: departure reminders, demand-based pricing
+  add('bookings', 'reminded_at', 'TEXT');
+  add('operators', 'dynamic_pricing', 'TEXT');
 }
 
 /** Run fn inside a write transaction. BEGIN IMMEDIATE serialises writers, so check-then-insert is safe. */

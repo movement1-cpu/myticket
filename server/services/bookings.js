@@ -9,6 +9,7 @@ import { ticketUrl } from './tickets.js';
 import { normLuggage, LUGGAGE_SQL } from './luggage.js';
 import { checkRedeem, maxRedeemable, pointsValue, restorePoints, awardPoints } from './loyalty.js';
 import { logTripKm } from './maintenance.js';
+import { processWaitlist, markWaitlistBooked } from './waitlist.js';
 import { t as tr, langFor } from '../i18n.js';
 import { providers } from './payments/providers.js';
 
@@ -105,6 +106,7 @@ export function createBookings(db, { legs, contact, promo_code, payment_method, 
         catch (e) { if (String(e.message).includes('UNIQUE')) throw conflict(`Seat ${p.seat_no} is already booked.`, 'seat_taken'); throw e; }
       });
       db.prepare('DELETE FROM seat_holds WHERE trip_id = ? AND hold_token = ?').run(trip.id, leg.hold_token);
+      markWaitlistBooked(db, leg.hold_token);
       if (promo) db.prepare('UPDATE pricing_rules SET used = used + 1 WHERE id = ?').run(promo.id);
       created.push({ ref: bookingRef, trip_id: trip.id, status, total, expires_at: expires, price, points_used: ptsUsed, points_discount: ptsDisc });
     }
@@ -225,6 +227,7 @@ export function cancelBooking(db, booking, { by, reason, full = false }) {
     db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?,?,?,?,?)').run(by?.id ?? null, 'cancel', 'booking', booking.ref, reason);
   });
   seatChanged(booking.trip_id);
+  processWaitlist(db, booking.trip_id); // freed seats go to the next person waiting
   notifyContact(db, { phone: booking.contact_phone, email: booking.contact_email, kind: 'cancelled', subject: `Booking ${booking.ref} cancelled`,
     body: tr(booking.lang, amount > 0 ? 'sms.cancelled_refund' : 'sms.cancelled', { ref: booking.ref, amount: cur(amount) }) });
   return { ref: booking.ref, refund: amount, pct: full ? 100 : q.pct, points_restored: booking.points_used || 0 };
@@ -307,4 +310,5 @@ export function sweep(db) {
       WHERE tr.status = 'arrived' OR datetime(tr.depart_at, '+' || (r.duration_min + tr.delay_min + 360) || ' minutes') < datetime('now'))`).run();
   awardPoints(db);
   logTripKm(db);
+  processWaitlist(db);
 }

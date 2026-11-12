@@ -5,6 +5,9 @@ export const LANGS = { en: 'English', bem: 'Ichibemba', nya: 'Chinyanja', toi: '
 
 const M = {
   en: {
+    'sms.reminder': 'MyTicket reminder: bus {plate} {from} to {to} leaves {date} at {time} from {terminal}. Seat {seats}, booking {ref}. Be there 30 minutes early with your ID.',
+    'sms.waitlist_joined': 'MyTicket: You are number {n} on the waitlist for {seats} seat(s). We will SMS you a link as soon as seats free up.',
+    'sms.waitlist_offer': 'MyTicket: Seats {seats} are now held for you until {time}. Pay here to keep them: {url}',
     'sms.ticket': 'MyTicket: Booking {ref} confirmed. {from} to {to}, {date} {time}, seat {seats}. Board at {terminal}. Ticket: {url}',
     'sms.reserved': 'MyTicket: Seats reserved, ref {refs}. Pay {amount} at the {company} counter by {time} or the reservation is released.',
     'sms.cancelled': 'MyTicket: Booking {ref} is cancelled.',
@@ -41,6 +44,9 @@ const M = {
     'sms.help': 'MyTicket SMS: STATUS <ref> for your bus, TICKETS for your bookings. To book, dial the USSD code or visit our website.',
   },
   bem: {
+    'sms.reminder': 'MyTicket: Mwibukisheni: basi {plate} {from} ukuya ku {to} ikafuma {date} {time} pa {terminal}. Icipuna {seats}, {ref}. Fikeni mamineti 30 ilyo ishilafuma ne citupa cenu.',
+    'sms.waitlist_joined': 'MyTicket: Muli nambala {n} pa lisitu lya kulolela ifipuna {seats}. Tukamutumina link ilyo ifipuna fyakakuka.',
+    'sms.waitlist_offer': 'MyTicket: Ifipuna {seats} fyamusungilwa ukufika {time}. Lipileni pano: {url}',
     'sms.ticket': 'MyTicket: Ukubukisha {ref} kwasuminishiwa. {from} ukuya ku {to}, {date} {time}, icipuna {seats}. Ingileni pa {terminal}. Itikiti: {url}',
     'sms.reserved': 'MyTicket: Ifipuna fyasungwa, {refs}. Lipileni {amount} pa kaunta ya {company} ilyo {time} tailafika, nangu teifyo fikafumishiwapo.',
     'sms.cancelled': 'MyTicket: Ukubukisha {ref} kwafumishiwapo.',
@@ -76,6 +82,9 @@ const M = {
     'status.scheduled': 'pa nshita', 'status.boarding': 'ilepoka abantu', 'status.departed': 'ili mu musebo', 'status.delayed': 'ilechelwa mamineti {min}', 'status.arrived': 'yafika', 'status.cancelled': 'YAFUMISHIWAPO',
   },
   nya: {
+    'sms.reminder': 'MyTicket: Chikumbutso: basi {plate} {from} kupita ku {to} inyamuka {date} {time} pa {terminal}. Mpando {seats}, {ref}. Fikani mphindi 30 isananyamuke ndi chiphaso chanu.',
+    'sms.waitlist_joined': 'MyTicket: Ndinu nambala {n} pa mndandanda wodikira mipando {seats}. Tidzakutumizirani link mipando ikangopezeka.',
+    'sms.waitlist_offer': 'MyTicket: Mipando {seats} yakusungirani mpaka {time}. Lipirani apa kuti muisunge: {url}',
     'sms.ticket': 'MyTicket: Buking {ref} yatsimikizika. {from} kupita ku {to}, {date} {time}, mpando {seats}. Kwerani pa {terminal}. Tikiti: {url}',
     'sms.reserved': 'MyTicket: Mipando yasungidwa, {refs}. Lipirani {amount} ku kaunta ya {company} isanafike {time}, apo ayi idzachotsedwa.',
     'sms.cancelled': 'MyTicket: Buking {ref} yachotsedwa.',
@@ -111,6 +120,9 @@ const M = {
     'status.scheduled': 'pa nthawi', 'status.boarding': 'ikukweza anthu', 'status.departed': 'ili pa msewu', 'status.delayed': 'ichedwa mphindi {min}', 'status.arrived': 'yafika', 'status.cancelled': 'YALETSEDWA',
   },
   toi: {
+    'sms.reminder': 'MyTicket: Kuyeezyegwa: bbaasi {plate} {from} kuya ku {to} liyooinka {date} {time} ku {terminal}. Cuuno {seats}, {ref}. Amusike maminiti 30 kalitanainka acitupa canu.',
+    'sms.waitlist_joined': 'MyTicket: Muli namba {n} amulongo wakulindila zyuuno {seats}. Tuyoomutumina link zyuuno zyaakujanika.',
+    'sms.waitlist_offer': 'MyTicket: Zyuuno {seats} zyamubambilwa kusikila {time}. Amulipe aawa: {url}',
     'sms.ticket': 'MyTicket: Kubbuka {ref} kwasimpwa. {from} kuya ku {to}, {date} {time}, cuuno {seats}. Njilila ku {terminal}. Tikiti: {url}',
     'sms.reserved': 'MyTicket: Zyuuno zyabambilwa, {refs}. Mulipe {amount} ku kkaunta ya {company} kiitanasika {time}, kutali boobo zyiyoogwisyigwa.',
     'sms.cancelled': 'MyTicket: Kubbuka {ref} kwagwisyigwa.',

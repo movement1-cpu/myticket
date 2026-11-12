@@ -36,6 +36,7 @@ const routes = [
   [/^#\/pay\/(\w+)$/, (m, v) => passenger.pay(v, m[1])],
   [/^#\/trips$/, (_m, v) => passenger.myTrips(v)],
   [/^#\/find$/, (_m, v) => passenger.find(v)],
+  [/^#\/offer\/(\d+-[\w-]+)$/, (m, v) => passenger.offer(v, m[1])],
   [/^#\/track\/(\d+)$/, (m, v) => passenger.track(v, Number(m[1]))],
   [/^#\/reschedule\/(\w+)$/, (m, v) => passenger.reschedule(v, m[1])],
   [/^#\/login$/, (_m, v) => loginPage(v)],

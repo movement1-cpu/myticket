@@ -108,6 +108,18 @@ const D = {
     'Amaponti {b}, yalingana {v}. Mukwata iponti 1 pali K{k} iyo mulipila pa bulendo ubwapwa.',
     'Mapointi {b}, ofanana ndi {v}. Mumapeza pointi 1 pa K{k} iliyonse yomwe mumalipira paulendo womaliza.',
     'Maponti {b}, aali {v}. Mujana poonti 1 kuli K{k} yomulipa kumweendo wamana.'],
+  'w.join': ['Join waitlist', 'Ingila pa lisitu lya kulolela', 'Lowani pa mndandanda wodikira', 'Njila mumulongo wakulindila'],
+  'w.title': ['This bus is full', 'Iyi basi yaisula', 'Basi iyi yadzaza', 'Bbaasi eeli lyazula'],
+  'w.desc': ['Join the waitlist. If seats free up, we hold them for you and send an SMS with a link to pay.',
+    'Ingileni pa lisitu. Nga ifipuna fyakakuka, tukamusungila no kumutumina SMS ne link ya kulipila.',
+    'Lowani pa mndandanda. Mipando ikapezeka, tidzakusungirani ndi kutumiza SMS ndi link yolipirira.',
+    'Amunjile mumulongo. Zyuuno kuti zyajanika, tuyoomubambila akumutumina SMS a link yakulipa.'],
+  'w.seats': ['Seats needed', 'Ifipuna mulefwaya', 'Mipando yofunika', 'Zyuuno nzyomuyanda'],
+  'w.done': ['You are number {n} in line. We will SMS you when seats free up.', 'Muli nambala {n}. Tukamutumina SMS ilyo ifipuna fyakakuka.',
+    'Ndinu nambala {n}. Tidzakutumizirani SMS mipando ikapezeka.', 'Muli namba {n}. Tuyoomutumina SMS zyuuno zyaakujanika.'],
+  'w.offer': ['Seats held for you from the waitlist', 'Ifipuna fyamusungilwa ukufuma pa lisitu', 'Mipando yakusungirani kuchokera pa mndandanda', 'Zyuuno zyamubambilwa kuzwa mumulongo'],
+  'r.early': ['Early booking −{p}%', 'Ukubukisha bwangu −{p}%', 'Kugula msanga −{p}%', 'Kuula kaciindi kacili −{p}%'],
+  'r.demand': ['Filling up +{p}%', 'Ileisula +{p}%', 'Ikudzaza +{p}%', 'Lilazula +{p}%'],
   'lang': ['Language', 'Ululimi', 'Chilankhulo', 'Mwaambo'],
 };
 const IDX = { en: 0, bem: 1, nya: 2, toi: 3 };

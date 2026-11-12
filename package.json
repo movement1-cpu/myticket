@@ -11,7 +11,8 @@
     "start": "node --no-warnings=ExperimentalWarning server/index.js",
     "dev": "NODE_ENV=development node --no-warnings=ExperimentalWarning --watch server/index.js",
     "seed:demo": "node --no-warnings=ExperimentalWarning server/seed.js",
-    "test": "node --no-warnings=ExperimentalWarning --test --test-concurrency=1 test/*.test.js"
+    "test": "node --no-warnings=ExperimentalWarning --test --test-concurrency=1 test/*.test.js",
+    "backup": "node --no-warnings=ExperimentalWarning server/backup.js"
   },
   "license": "UNLICENSED",
   "dependencies": {

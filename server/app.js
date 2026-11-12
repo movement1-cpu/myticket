@@ -66,7 +66,11 @@ export function createApp(db) {
     catch (e) { if (!(e instanceof HttpError)) console.error(e); }
     res.json({ ok: true });
   });
-  api.get('/health', (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+  /** For load balancers and uptime monitors: checks the database too. */
+  api.get('/health', (_req, res) => {
+    const ok = db.prepare('SELECT 1 ok').get()?.ok === 1;
+    res.status(ok ? 200 : 503).json({ ok, time: new Date().toISOString() });
+  });
   api.use((_req, _res, next) => next(notFound('Unknown API endpoint.')));
   app.use('/api', api);
 

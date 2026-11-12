@@ -5,6 +5,8 @@ import { sweep } from './services/bookings.js';
 import { dispatch } from './services/notify.js';
 import { seedDemo } from './seed.js';
 import { sendReminders } from './services/maintenance.js';
+import { sendDepartureReminders } from './services/reminders.js';
+import { backupNow, pruneBackups } from './backup.js';
 
 const db = openDb();
 const empty = !db.prepare('SELECT 1 FROM users LIMIT 1').get();
@@ -23,3 +25,7 @@ setInterval(() => dispatch(db).catch(e => console.error('dispatch', e)), 5_000);
 // Daily maintenance / document-expiry SMS to each bus company owner (checked hourly, sent once a day).
 setInterval(() => { try { sendReminders(db); } catch (e) { console.error('reminders', e); } }, 3_600_000);
 setTimeout(() => { try { sendReminders(db); } catch (e) { console.error('reminders', e); } }, 30_000);
+// Departure reminders to passengers (checked every 5 minutes).
+setInterval(() => { try { sendDepartureReminders(db); } catch (e) { console.error('departure reminders', e); } }, 300_000);
+// Nightly database backup (checked hourly; one per day), keeping BACKUP_KEEP_DAYS days.
+if (config.backupDir) setInterval(() => { try { backupNow(db, { daily: true }); pruneBackups(); } catch (e) { console.error('backup', e); } }, 3_600_000);

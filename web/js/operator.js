@@ -61,7 +61,7 @@ function tripTable(trips, compact = false) {
   return html`<div class="tablewrap"><table><thead><tr><th>Time</th><th>Route</th><th>Bus</th>${compact ? '' : raw('<th>Crew</th>')}<th class="r">Booked</th><th class="r">Boarded</th><th>Status</th>${compact ? '' : raw('<th></th>')}</tr></thead><tbody>
     ${trips.map(t => html`<tr><td class="num"><b>${t.depart_local}</b>${t.delay_min ? html`<br><span class="small" style="color:var(--warn)">+${t.delay_min} min</span>` : ''}</td><td>${t.route_name}</td><td><span class="mono">${t.plate}</span><br><span class="small muted">${t.class}</span>${t.blockers?.length ? html`<br><span class="pill bad" title="Fix before departure">${t.blockers.join(', ')}</span>` : ''}</td>
       ${compact ? '' : html`<td class="small">${t.driver_name || raw('<span style="color:var(--bad)">No driver</span>')}<br>${t.conductor_name || raw('<span class="muted">No conductor</span>')}</td>`}
-      <td class="r num">${t.booked}/${t.capacity}</td><td class="r num">${t.boarded}</td><td>${pill(t.status)}</td>
+      <td class="r num">${t.booked}/${t.capacity}${t.waiting ? html`<br><span class="small" style="color:var(--warn)">+${t.waiting} waiting</span>` : ''}</td><td class="r num">${t.boarded}</td><td>${pill(t.status)}</td>
       ${compact ? '' : html`<td><div class="row" style="gap:4px;flex-wrap:nowrap"><button class="btn sm" data-manifest="${t.id}">Manifest</button><button class="btn ghost sm" data-status="${t.id}">Status</button>${auth.user.role === 'operator' ? html`<button class="btn ghost sm" data-crew="${t.id}">Crew</button>` : ''}</div></td>`}</tr>`)}
   </tbody></table></div>`;
 }
@@ -439,15 +439,31 @@ async function schedules(main) {
 
 /* ---------- pricing ---------- */
 async function pricing(main) {
-  const list = await api('/operator/pricing');
+  const [list, profile] = await Promise.all([api('/operator/pricing'), api('/operator/profile')]);
+  const dyn = profile.terms.dynamic;
+  const tiers = [...dyn.tiers, {}, {}].slice(0, Math.max(3, dyn.tiers.length));
   const label = { peak: 'Peak surcharge', child: 'Child discount', promo: 'Promo code' };
   main.innerHTML = html`<div class="head"><h1>Fares & promos</h1><button class="btn" id="add">Add rule</button></div>
+    <form class="card" id="dyn"><div class="head"><h3>Demand-based fares</h3><label class="chip"><input type="checkbox" name="enabled" ${dyn.enabled ? 'checked' : ''}>On</label></div>
+      <p class="small muted" style="margin:0">Raise the fare as a bus fills up and reward people who book early. The price is fixed when the passenger books; search results always show the current price.</p>
+      <div class="grid3">${tiers.map((t, i) => html`<div class="row" style="flex-wrap:nowrap;align-items:center"><span class="small">When</span><input name="occ${i}" type="number" min="1" max="100" value="${t.occupancy ?? ''}" style="max-width:80px" aria-label="Percent full">
+        <span class="small">% full, add</span><input name="pct${i}" type="number" min="0" max="50" value="${t.pct ?? ''}" style="max-width:70px" aria-label="Surcharge percent"><span class="small">%</span></div>`)}</div>
+      <div class="row" style="align-items:center"><span class="small">Booked at least</span><input name="early_days" type="number" min="0" max="180" value="${dyn.early_days}" style="max-width:80px" aria-label="Days ahead">
+        <span class="small">days ahead: take off</span><input name="early_pct" type="number" min="0" max="50" value="${dyn.early_pct}" style="max-width:70px" aria-label="Early discount percent"><span class="small">%</span></div>
+      <div><button class="btn">Save demand-based fares</button></div></form>
     <p class="muted" style="margin:0">Base fares are set per departure in the Timetable. These rules adjust them: peak surcharges for date ranges, a discount for children, and promo codes.</p>
     <div class="tablewrap"><table><thead><tr><th>Type</th><th>Name</th><th class="r">%</th><th>Code</th><th>Dates</th><th>Used</th><th></th></tr></thead><tbody>
       ${list.map(p => html`<tr style="${p.active ? '' : 'opacity:.55'}"><td>${label[p.kind]}</td><td>${p.name}</td><td class="r num">${p.kind === 'peak' ? '+' : '−'}${p.pct}</td><td class="mono">${p.code || ''}</td>
         <td class="small">${p.start_date ? `${dayOf(p.start_date)} – ${dayOf(p.end_date)}` : 'Always'}</td><td class="num">${p.kind === 'promo' ? `${p.used}${p.max_uses ? ' / ' + p.max_uses : ''}` : ''}</td>
         <td><button class="btn ghost sm" data-toggle="${p.id}" data-active="${p.active}">${p.active ? 'Turn off' : 'Turn on'}</button></td></tr>`)}
     </tbody></table></div>`;
+  const df = $('#dyn', main);
+  df.addEventListener('submit', e => { e.preventDefault(); busy(df.querySelector('.btn'), async () => {
+    const v = formData(df);
+    const body = { enabled: !!v.enabled, early_days: Number(v.early_days), early_pct: Number(v.early_pct), tiers: tiers.map((_, i) => ({ occupancy: Number(v['occ' + i]), pct: Number(v['pct' + i]) })).filter(t => t.occupancy) };
+    await api('/operator/profile', { method: 'PUT', body: { dynamic_pricing: body } });
+    toast(body.enabled ? 'Demand-based fares are on.' : 'Demand-based fares are off.');
+  }); });
   $('#add', main).addEventListener('click', () => {
     const m = modal(html`<h2>Add a fare rule</h2><form id="pf" class="grid2">
       <label class="field"><span>Type</span><select name="kind"><option value="peak">Peak / holiday surcharge</option><option value="child">Child discount</option><option value="promo">Promo code</option></select></label>
