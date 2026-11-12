@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Card payment (sandbox) — MyTicket</title>
+  <meta name="robots" content="noindex">
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+  <main class="wrap" style="max-width:440px">
+    <div class="page">
+      <div class="notice">Sandbox card gateway. In production this page is the payment provider's hosted checkout, so card numbers never reach MyTicket.</div>
+      <div class="card">
+        <h2>Pay by card</h2>
+        <p class="muted" style="margin:0">Reference <span class="mono" id="ref"></span></p>
+        <label class="field"><span>Card number</span><input id="pan" value="4242 4242 4242 4242" inputmode="numeric" autocomplete="off"></label>
+        <p class="small muted" style="margin:0">Use 4000 0000 0000 0002 to simulate a declined card.</p>
+        <button class="btn copper" id="pay">Pay</button>
+        <button class="btn ghost" id="cancel">Cancel</button>
+      </div>
+    </div>
+  </main>
+  <script type="module" src="/js/paycard.js"></script>
+</body>
+</html>

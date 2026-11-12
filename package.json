@@ -1,0 +1,24 @@
+{
+  "name": "myticket",
+  "version": "1.0.0",
+  "description": "Bus ticket booking and fleet management platform: passenger, operator, conductor/agent and admin portals.",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --no-warnings=ExperimentalWarning server/index.js",
+    "dev": "NODE_ENV=development node --no-warnings=ExperimentalWarning --watch server/index.js",
+    "seed:demo": "node --no-warnings=ExperimentalWarning server/seed.js",
+    "test": "node --no-warnings=ExperimentalWarning --test --test-concurrency=1 test/*.test.js"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "express": "^5.1.0",
+    "jsqr": "^1.4.0",
+    "leaflet": "^1.9.4",
+    "pdfkit": "^0.17.1",
+    "qrcode": "^1.5.4"
+  }
+}

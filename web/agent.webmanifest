@@ -1,0 +1,9 @@
+{
+  "name": "MyTicket Field App",
+  "short_name": "MT Field",
+  "start_url": "/agent.html",
+  "display": "standalone",
+  "background_color": "#f4f3ef",
+  "theme_color": "#146b3a",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

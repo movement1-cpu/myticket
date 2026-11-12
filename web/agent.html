@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>MyTicket Field App</title>
+  <meta name="theme-color" content="#146b3a">
+  <link rel="manifest" href="/agent.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/css/app.css">
+  <style>
+    .agent { max-width: 560px; margin: 0 auto; }
+    .net { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: rgba(255,255,255,.2); }
+    .net.off { background: var(--copper); color: var(--copper-ink); }
+    video { width: 100%; border-radius: 10px; background: #000; aspect-ratio: 4 / 3; object-fit: cover; }
+    .result { border-radius: 10px; padding: 16px; font-weight: 700; font-size: 18px; text-align: center; }
+    .result.ok { background: var(--ok); color: #fff; } .result.bad { background: var(--bad); color: #fff; } .result.warn { background: var(--warn); color: #fff; }
+    .bigbtns { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .bigbtns .btn { padding: 14px; font-size: 15px; }
+    .pax { display: grid; grid-template-columns: 44px 1fr auto; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); align-items: center; }
+  </style>
+</head>
+<body>
+  <header class="topbar"><div class="in"><span class="logo"><i>MT</i> Field app</span><nav><span class="net" id="net">Online</span><button id="logout" hidden>Sign out</button></nav></div></header>
+  <main class="wrap agent" id="app"></main>
+  <script src="/vendor/jsqr/jsQR.js"></script>
+  <script type="module" src="/js/agent.js"></script>
+</body>
+</html>

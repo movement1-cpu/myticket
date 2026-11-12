@@ -1,0 +1,375 @@
+import { Router } from 'express';
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { tx } from '../db.js';
+import { config } from '../config.js';
+import { requireRole, requireApprovedOperator, hashPassword } from '../auth.js';
+import { bad, notFound, conflict, forbidden, required, normPhone, isDate, isTime, ref, money, localDate, localTime, addDays } from '../util.js';
+import { ensureTrips, routeStops } from '../services/trips.js';
+import { createBookings, settleAtCounter, cancelBooking, groupBookings } from '../services/bookings.js';
+import { operatorTerms } from '../services/pricing.js';
+import { notifyContact } from '../services/notify.js';
+import { ticketData } from '../services/tickets.js';
+
+const CLASSES = ['Luxury', 'Semi-Luxury', 'VIP Sleeper', 'Express', 'Standard'];
+const AMENITIES = ['Wi-Fi', 'AC', 'USB Charging', 'Toilet', 'Reclining Seats', 'TV', 'Refreshments', 'Blanket'];
+const MIME = { 'application/pdf': '.pdf', 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp' };
+
+/** Save a base64 upload ({filename, mime, data}) after checking type and size. */
+export function saveUpload(file) {
+  if (!file?.data || !file?.mime || !MIME[file.mime]) throw bad('Upload a PDF, JPG, PNG or WebP file.');
+  const buf = Buffer.from(String(file.data).replace(/^data:[^,]+,/, ''), 'base64');
+  if (buf.length > 5 * 1024 * 1024) throw bad('Files must be 5 MB or smaller.');
+  const sig = buf.subarray(0, 4).toString('hex');
+  const okSig = { 'application/pdf': '25504446', 'image/png': '89504e47', 'image/jpeg': 'ffd8ff', 'image/webp': '52494646' }[file.mime];
+  if (!sig.startsWith(okSig)) throw bad('The file content does not match its type.');
+  fs.mkdirSync(config.uploadDir, { recursive: true });
+  const stored = crypto.randomUUID() + MIME[file.mime];
+  fs.writeFileSync(path.join(config.uploadDir, stored), buf);
+  return { stored, size: buf.length, filename: String(file.filename || 'upload').slice(0, 200) };
+}
+
+export default function operatorRoutes(db) {
+  const r = Router();
+  const owner = [requireRole('operator')];
+  const ownerOps = [requireRole('operator'), requireApprovedOperator];
+  const desk = [requireRole('operator', 'clerk', 'conductor'), requireApprovedOperator]; // station staff
+  const mine = (table, id, opId) => {
+    const row = db.prepare(`SELECT * FROM ${table} WHERE id = ? AND operator_id = ?`).get(id, opId);
+    if (!row) throw notFound();
+    return row;
+  };
+  const audit = (req, action, entity, id, detail) => db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?,?,?,?,?)').run(req.user.id, action, entity, String(id), detail ?? null);
+
+  /* ---------- company profile & verification ---------- */
+  r.get('/operator/profile', requireRole('operator', 'clerk', 'conductor'), (req, res) => {
+    const o = db.prepare('SELECT * FROM operators WHERE id = ?').get(req.operatorId);
+    const docs = db.prepare("SELECT id, kind, filename, status, expires_on, uploaded_at FROM documents WHERE operator_id = ? AND owner_type = 'operator' ORDER BY id DESC").all(req.operatorId);
+    res.json({ ...o, terms: operatorTerms(db, req.operatorId), documents: docs, amenities: AMENITIES, classes: CLASSES });
+  });
+  r.put('/operator/profile', ...owner, (req, res) => {
+    const b = req.body;
+    if (b.refund_policy) {
+      const p = b.refund_policy;
+      if (!Array.isArray(p) || !p.every(t => t.hours >= 0 && t.pct >= 0 && t.pct <= 100)) throw bad('Refund tiers need hours ≥ 0 and a percentage between 0 and 100.');
+    }
+    db.prepare(`UPDATE operators SET contact_phone = COALESCE(?, contact_phone), contact_email = COALESCE(?, contact_email), bank_name = COALESCE(?, bank_name),
+      bank_account = COALESCE(?, bank_account), bank_branch = COALESCE(?, bank_branch), pacra_no = COALESCE(?, pacra_no), tpin = COALESCE(?, tpin),
+      refund_policy = COALESCE(?, refund_policy), reschedule_fee = COALESCE(?, reschedule_fee) WHERE id = ?`)
+      .run(b.contact_phone ?? null, b.contact_email ?? null, b.bank_name ?? null, b.bank_account ?? null, b.bank_branch ?? null, b.pacra_no ?? null, b.tpin ?? null,
+        b.refund_policy ? JSON.stringify([...b.refund_policy].sort((x, y) => y.hours - x.hours)) : null, b.reschedule_fee ?? null, req.operatorId);
+    audit(req, 'update', 'operator', req.operatorId);
+    res.json({ ok: true });
+  });
+  r.post('/operator/documents', ...owner, (req, res) => {
+    const kind = req.body.kind;
+    if (!['pacra', 'rtsa_licence', 'tax_clearance', 'other'].includes(kind)) throw bad('Choose the document type: PACRA, RTSA licence or tax clearance.');
+    const f = saveUpload(req.body.file);
+    const d = db.prepare(`INSERT INTO documents (operator_id, owner_type, owner_id, kind, filename, stored_name, mime, size, expires_on) VALUES (?,?,?,?,?,?,?,?,?) RETURNING id`)
+      .get(req.operatorId, 'operator', req.operatorId, kind, f.filename, f.stored, req.body.file.mime, f.size, isDate(req.body.expires_on) ? req.body.expires_on : null);
+    res.status(201).json(d);
+  });
+
+  /* ---------- staff ---------- */
+  r.get('/operator/staff', ...owner, (req, res) => {
+    res.json(db.prepare('SELECT s.*, u.phone AS login_phone FROM staff s LEFT JOIN users u ON u.id = s.user_id WHERE s.operator_id = ? ORDER BY s.role, s.name').all(req.operatorId));
+  });
+  r.post('/operator/staff', ...owner, (req, res) => {
+    required(req.body, ['name', 'phone', 'role']);
+    const { name, role, licence_no, password } = req.body;
+    if (!['driver', 'conductor', 'clerk'].includes(role)) throw bad('Role must be driver, conductor or clerk.');
+    if (role === 'driver' && !licence_no) throw bad('Enter the driver’s licence number.');
+    const phone = normPhone(req.body.phone);
+    const s = tx(db, () => {
+      let userId = null;
+      if (role !== 'driver') { // conductors and clerks get a login for the field app / counter
+        if (!password || password.length < 8) throw bad('Set a password of at least 8 characters for the staff login.');
+        if (db.prepare('SELECT 1 FROM users WHERE phone = ?').get(phone)) throw conflict('That phone number already has an account.');
+        userId = db.prepare('INSERT INTO users (role, name, phone, password_hash, operator_id) VALUES (?,?,?,?,?) RETURNING id').get(role, name.trim(), phone, hashPassword(password), req.operatorId).id;
+      }
+      return db.prepare('INSERT INTO staff (operator_id, user_id, name, phone, role, licence_no) VALUES (?,?,?,?,?,?) RETURNING *').get(req.operatorId, userId, name.trim(), phone, role, licence_no || null);
+    });
+    res.status(201).json(s);
+  });
+  r.put('/operator/staff/:id', ...owner, (req, res) => {
+    const s = mine('staff', req.params.id, req.operatorId);
+    const active = req.body.active === undefined ? s.active : req.body.active ? 1 : 0;
+    db.prepare('UPDATE staff SET name = ?, licence_no = ?, active = ? WHERE id = ?').run(req.body.name || s.name, req.body.licence_no ?? s.licence_no, active, s.id);
+    if (s.user_id) db.prepare('UPDATE users SET active = ? WHERE id = ?').run(active, s.user_id);
+    res.json({ ok: true });
+  });
+
+  /* ---------- fleet ---------- */
+  r.get('/layouts', requireRole('operator', 'admin'), (_req, res) => res.json(db.prepare('SELECT id, code, name, capacity, spec FROM layouts ORDER BY capacity').all().map(l => ({ ...l, spec: JSON.parse(l.spec) }))));
+  r.get('/operator/buses', ...desk, (req, res) => {
+    const rows = db.prepare(`SELECT b.*, l.name layout_name, l.capacity, d.name driver_name, c.name conductor_name FROM buses b JOIN layouts l ON l.id = b.layout_id
+      LEFT JOIN staff d ON d.id = b.driver_id LEFT JOIN staff c ON c.id = b.conductor_id WHERE b.operator_id = ? ORDER BY b.plate`).all(req.operatorId);
+    const photos = db.prepare("SELECT id, filename FROM documents WHERE owner_type = 'bus' AND owner_id = ?");
+    res.json(rows.map(b => ({ ...b, amenities: JSON.parse(b.amenities), photos: photos.all(b.id) })));
+  });
+  const busBody = (req, b = {}) => {
+    const v = { ...b, ...req.body };
+    required(v, ['plate', 'class', 'layout_id']);
+    if (!CLASSES.includes(v.class)) throw bad('Choose a bus class.');
+    if (!db.prepare('SELECT 1 FROM layouts WHERE id = ?').get(v.layout_id)) throw bad('Choose a seat layout.');
+    const amen = (Array.isArray(v.amenities) ? v.amenities : JSON.parse(v.amenities || '[]')).filter(a => AMENITIES.includes(a));
+    const staffOk = (id, role) => { if (id && !db.prepare('SELECT 1 FROM staff WHERE id = ? AND operator_id = ? AND role = ? AND active = 1').get(id, req.operatorId, role)) throw bad(`That ${role} is not on your staff list.`); return id || null; };
+    if (!['active', 'maintenance', 'retired'].includes(v.status || 'active')) throw bad('Unknown bus status.');
+    return [String(v.plate).toUpperCase().replace(/\s+/g, ' ').trim(), v.chassis_no || null, v.engine_no || null, v.make_model || null, v.class, Number(v.layout_id), JSON.stringify(amen),
+      v.status || 'active', staffOk(v.driver_id, 'driver'), staffOk(v.conductor_id, 'conductor')];
+  };
+  r.post('/operator/buses', ...owner, (req, res) => {
+    try {
+      const b = db.prepare(`INSERT INTO buses (plate, chassis_no, engine_no, make_model, class, layout_id, amenities, status, driver_id, conductor_id, operator_id) VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).get(...busBody(req), req.operatorId);
+      res.status(201).json(b);
+    } catch (e) { if (String(e.message).includes('UNIQUE')) throw conflict('A bus with this plate number is already registered.'); throw e; }
+  });
+  r.put('/operator/buses/:id', ...owner, (req, res) => {
+    const b = mine('buses', req.params.id, req.operatorId);
+    const v = busBody(req, b);
+    if (v[5] !== b.layout_id && db.prepare("SELECT 1 FROM booking_seats bs JOIN trips t ON t.id = bs.trip_id WHERE t.bus_id = ? AND bs.active = 1 AND t.depart_at > ?").get(b.id, new Date().toISOString()))
+      throw conflict('This bus has passengers booked on upcoming trips, so its seat layout cannot change. Assign a different bus to those trips first.');
+    db.prepare(`UPDATE buses SET plate=?, chassis_no=?, engine_no=?, make_model=?, class=?, layout_id=?, amenities=?, status=?, driver_id=?, conductor_id=? WHERE id=?`).run(...v, b.id);
+    // Crew changes apply to this bus's upcoming trips.
+    db.prepare("UPDATE trips SET driver_id = ?, conductor_id = ? WHERE bus_id = ? AND status = 'scheduled'").run(v[8], v[9], b.id);
+    audit(req, 'update', 'bus', b.id);
+    res.json({ ok: true });
+  });
+  r.post('/operator/buses/:id/photos', ...owner, (req, res) => {
+    const b = mine('buses', req.params.id, req.operatorId);
+    const f = saveUpload(req.body.file);
+    if (!req.body.file.mime.startsWith('image/')) throw bad('Bus photos must be images.');
+    res.status(201).json(db.prepare(`INSERT INTO documents (operator_id, owner_type, owner_id, kind, filename, stored_name, mime, size) VALUES (?,?,?,?,?,?,?,?) RETURNING id`)
+      .get(req.operatorId, 'bus', b.id, 'bus_photo', f.filename, f.stored, req.body.file.mime, f.size));
+  });
+
+  /* ---------- terminals & routes ---------- */
+  r.get('/terminals', requireRole('operator', 'clerk', 'conductor', 'admin'), (_req, res) => res.json(db.prepare('SELECT * FROM terminals ORDER BY city, name').all()));
+  r.post('/terminals', ...ownerOps, (req, res) => {
+    required(req.body, ['city', 'name', 'lat', 'lng']);
+    const lat = Number(req.body.lat), lng = Number(req.body.lng);
+    if (!(lat > -19 && lat < -8 && lng > 21 && lng < 34)) throw bad('Coordinates should be inside Zambia (lat −8 to −19, lng 21 to 34). Copy them from Google Maps.');
+    try {
+      res.status(201).json(db.prepare('INSERT INTO terminals (city, name, lat, lng, kind) VALUES (?,?,?,?,?) RETURNING *').get(req.body.city.trim(), req.body.name.trim(), lat, lng, req.body.kind === 'roadside' ? 'roadside' : 'terminal'));
+    } catch (e) { if (String(e.message).includes('UNIQUE')) throw conflict('That stop already exists.'); throw e; }
+  });
+  r.get('/operator/routes', ...desk, (req, res) => {
+    res.json(db.prepare('SELECT * FROM routes WHERE operator_id = ? ORDER BY name').all(req.operatorId).map(rt => ({ ...rt, stops: routeStops(db, rt.id) })));
+  });
+  /** Route builder: stops in order with minutes and km from the first stop. */
+  const saveRoute = (req, routeId) => {
+    const { stops } = req.body;
+    if (!Array.isArray(stops) || stops.length < 2) throw bad('A route needs at least an origin and a destination.');
+    stops.forEach((s, i) => {
+      if (!db.prepare('SELECT 1 FROM terminals WHERE id = ?').get(s.terminal_id)) throw bad(`Stop ${i + 1}: choose a terminal.`);
+      if (i === 0 && (Number(s.offset_min) !== 0 || Number(s.km) !== 0)) throw bad('The first stop is the start: 0 minutes and 0 km.');
+      if (i > 0 && (Number(s.offset_min) <= Number(stops[i - 1].offset_min) || Number(s.km) <= Number(stops[i - 1].km))) throw bad(`Stop ${i + 1} must be later and further than stop ${i}.`);
+    });
+    const last = stops.at(-1);
+    const names = stops.map(s => db.prepare('SELECT city FROM terminals WHERE id = ?').get(s.terminal_id).city);
+    const name = req.body.name?.trim() || `${names[0]} – ${names.at(-1)}`;
+    return tx(db, () => {
+      if (routeId) {
+        if (db.prepare("SELECT 1 FROM bookings b JOIN trips t ON t.id = b.trip_id WHERE t.route_id = ? AND b.status IN ('confirmed','reserved','pending_payment')").get(routeId))
+          throw conflict('This route has active bookings. Create a new route instead and move schedules to it.');
+        db.prepare('UPDATE routes SET name = ?, distance_km = ?, duration_min = ? WHERE id = ?').run(name, Number(last.km), Number(last.offset_min), routeId);
+        db.prepare('DELETE FROM route_stops WHERE route_id = ?').run(routeId);
+      } else {
+        routeId = db.prepare('INSERT INTO routes (operator_id, name, distance_km, duration_min) VALUES (?,?,?,?) RETURNING id').get(req.operatorId, name, Number(last.km), Number(last.offset_min)).id;
+      }
+      const ins = db.prepare('INSERT INTO route_stops (route_id, seq, terminal_id, offset_min, km, boarding, dropping) VALUES (?,?,?,?,?,?,?)');
+      stops.forEach((s, i) => ins.run(routeId, i + 1, s.terminal_id, Number(s.offset_min), Number(s.km), i === stops.length - 1 ? 0 : s.boarding === false ? 0 : 1, i === 0 ? 0 : s.dropping === false ? 0 : 1));
+      return { id: routeId };
+    });
+  };
+  r.post('/operator/routes', ...ownerOps, (req, res) => res.status(201).json(saveRoute(req)));
+  r.put('/operator/routes/:id', ...ownerOps, (req, res) => { mine('routes', req.params.id, req.operatorId); res.json(saveRoute(req, Number(req.params.id))); });
+
+  /* ---------- timetable ---------- */
+  r.get('/operator/schedules', ...desk, (req, res) => {
+    res.json(db.prepare(`SELECT s.*, r.name route_name, b.plate, b.class FROM schedules s JOIN routes r ON r.id = s.route_id JOIN buses b ON b.id = s.bus_id
+      WHERE s.operator_id = ? ORDER BY s.active DESC, r.name, s.depart_time`).all(req.operatorId));
+  });
+  const scheduleBody = (req, cur = {}) => {
+    const v = { ...cur, ...req.body };
+    required(v, ['route_id', 'bus_id', 'depart_time', 'start_date', 'base_fare']);
+    mine('routes', v.route_id, req.operatorId); mine('buses', v.bus_id, req.operatorId);
+    if (!isTime(v.depart_time)) throw bad('Departure time must be HH:MM.');
+    if (!isDate(v.start_date) || (v.end_date && !isDate(v.end_date))) throw bad('Dates must be YYYY-MM-DD.');
+    const days = String(v.days ?? '1234567').replace(/[^1-7]/g, '');
+    if (!v.one_off && !days) throw bad('Pick at least one day of the week.');
+    if (!(Number(v.base_fare) > 0)) throw bad('Enter the full-route fare in kwacha.');
+    return [Number(v.route_id), Number(v.bus_id), v.depart_time, days || '1234567', v.start_date, v.one_off ? v.start_date : (v.end_date || null), v.one_off ? 1 : 0, Number(v.base_fare), v.active === false || v.active === 0 ? 0 : 1];
+  };
+  r.post('/operator/schedules', ...ownerOps, (req, res) => {
+    res.status(201).json(db.prepare(`INSERT INTO schedules (route_id, bus_id, depart_time, days, start_date, end_date, one_off, base_fare, active, operator_id) VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING id`).get(...scheduleBody(req), req.operatorId));
+  });
+  r.put('/operator/schedules/:id', ...ownerOps, (req, res) => {
+    const s = mine('schedules', req.params.id, req.operatorId);
+    db.prepare('UPDATE schedules SET route_id=?, bus_id=?, depart_time=?, days=?, start_date=?, end_date=?, one_off=?, base_fare=?, active=? WHERE id=?').run(...scheduleBody(req, s), s.id);
+    // Upcoming trips without bookings follow the new fare; trips with bookings keep what passengers paid for.
+    db.prepare(`UPDATE trips SET base_fare = ? WHERE schedule_id = ? AND status = 'scheduled' AND depart_at > ? AND NOT EXISTS (SELECT 1 FROM bookings b WHERE b.trip_id = trips.id)`).run(Number(req.body.base_fare ?? s.base_fare), s.id, new Date().toISOString());
+    res.json({ ok: true });
+  });
+
+  /* ---------- trips ---------- */
+  r.get('/operator/trips', ...desk, (req, res) => {
+    const date = isDate(req.query.date) ? req.query.date : localDate();
+    ensureTrips(db, date);
+    const rows = db.prepare(`SELECT t.*, r.name route_name, b.plate, b.class, l.capacity, d.name driver_name, c.name conductor_name,
+        (SELECT COUNT(*) FROM booking_seats bs WHERE bs.trip_id = t.id AND bs.active = 1) booked,
+        (SELECT COUNT(*) FROM booking_seats bs WHERE bs.trip_id = t.id AND bs.active = 1 AND bs.boarded_at IS NOT NULL) boarded
+      FROM trips t JOIN routes r ON r.id = t.route_id JOIN buses b ON b.id = t.bus_id JOIN layouts l ON l.id = b.layout_id
+      LEFT JOIN staff d ON d.id = t.driver_id LEFT JOIN staff c ON c.id = t.conductor_id
+      WHERE t.operator_id = ? AND t.service_date = ? ORDER BY t.depart_at`).all(req.operatorId, date);
+    res.json(rows.map(t => ({ ...t, depart_local: localTime(t.depart_at) })));
+  });
+  r.put('/operator/trips/:id/crew', ...ownerOps, (req, res) => {
+    const t = mine('trips', req.params.id, req.operatorId);
+    const chk = (id, role) => { if (id && !db.prepare('SELECT 1 FROM staff WHERE id=? AND operator_id=? AND role=?').get(id, req.operatorId, role)) throw bad(`Choose a ${role} from your staff.`); return id || null; };
+    db.prepare('UPDATE trips SET driver_id = ?, conductor_id = ? WHERE id = ?').run(chk(req.body.driver_id, 'driver'), chk(req.body.conductor_id, 'conductor'), t.id);
+    res.json({ ok: true });
+  });
+
+  /** Passenger manifest for police / border checkpoints. ?format=csv for a download. */
+  r.get('/operator/trips/:id/manifest', ...desk, (req, res) => {
+    const t = mine('trips', req.params.id, req.operatorId);
+    const rows = db.prepare(`SELECT bs.seat_no, bs.passenger_name, bs.id_type, bs.id_number, bs.gender, bs.is_child, b.contact_phone, b.ref, b.status, b.channel,
+        ft.city from_city, ft.name from_stop, tt.city to_city, tt.name to_stop, bs.boarded_at
+      FROM booking_seats bs JOIN bookings b ON b.id = bs.booking_id
+      JOIN route_stops fs ON fs.id = b.from_stop_id JOIN terminals ft ON ft.id = fs.terminal_id
+      JOIN route_stops ts ON ts.id = b.to_stop_id JOIN terminals tt ON tt.id = ts.terminal_id
+      WHERE bs.trip_id = ? AND bs.active = 1 AND b.status IN ('confirmed','completed','reserved') ORDER BY CAST(bs.seat_no AS INTEGER), bs.seat_no`).all(t.id);
+    if (req.query.format === 'csv') {
+      const head = ['Seat', 'Passenger', 'ID type', 'ID number', 'Gender', 'Child', 'Phone', 'Booking', 'Status', 'From', 'To', 'Boarded'];
+      const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+      const csv = [head, ...rows.map(r => [r.seat_no, r.passenger_name, r.id_type, r.id_number, r.gender, r.is_child ? 'Y' : '', r.contact_phone, r.ref, r.status, `${r.from_stop}, ${r.from_city}`, `${r.to_stop}, ${r.to_city}`, r.boarded_at ? 'Y' : ''])].map(r => r.map(q).join(',')).join('\r\n');
+      res.set({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="manifest-trip-${t.id}-${t.service_date}.csv"` });
+      return res.send('﻿' + csv);
+    }
+    const trip = db.prepare(`SELECT t.*, r.name route_name, b.plate, d.name driver_name, d.licence_no, c.name conductor_name, o.name operator_name FROM trips t JOIN routes r ON r.id=t.route_id
+      JOIN buses b ON b.id=t.bus_id JOIN operators o ON o.id=t.operator_id LEFT JOIN staff d ON d.id=t.driver_id LEFT JOIN staff c ON c.id=t.conductor_id WHERE t.id=?`).get(t.id);
+    res.json({ trip: { ...trip, depart_local: `${localDate(trip.depart_at)} ${localTime(trip.depart_at)}` }, passengers: rows });
+  });
+
+  /* ---------- walk-in / counter sales (same live seat inventory) ---------- */
+  r.post('/counter/bookings', ...desk, (req, res) => {
+    for (const leg of req.body.legs || []) mine('trips', leg.trip_id, req.operatorId);
+    const method = req.body.payment_method === 'station' ? 'station' : 'cash';
+    res.status(201).json(createBookings(db, { ...req.body, payment_method: method, user: req.user, channel: req.user.role === 'conductor' ? 'agent' : 'counter' }));
+  });
+  r.get('/counter/lookup/:ref', ...desk, (req, res) => {
+    const q = req.params.ref.toUpperCase();
+    const b = db.prepare('SELECT * FROM bookings WHERE (ref = ? OR group_ref = ?) AND operator_id = ?').get(q, q, req.operatorId);
+    if (!b) throw notFound('No booking with that reference for your company.');
+    res.json({ group_ref: b.group_ref, bookings: groupBookings(db, b.group_ref).map(x => ticketData(db, x.ref)) });
+  });
+  r.post('/counter/settle/:group', ...desk, (req, res) => res.json(settleAtCounter(db, req.params.group, req.user)));
+  r.get('/counter/receipt/:ref', ...desk, (req, res) => {
+    const t = ticketData(db, req.params.ref);
+    if (!t || t.operator_id !== req.operatorId) throw notFound();
+    res.json(t);
+  });
+
+  /* ---------- pricing ---------- */
+  r.get('/operator/pricing', ...owner, (req, res) => res.json(db.prepare('SELECT * FROM pricing_rules WHERE operator_id = ? ORDER BY kind, id DESC').all(req.operatorId)));
+  r.post('/operator/pricing', ...ownerOps, (req, res) => {
+    const b = req.body;
+    required(b, ['kind', 'name', 'pct']);
+    if (!['peak', 'child', 'promo'].includes(b.kind)) throw bad('Rule type must be peak, child or promo.');
+    const pct = Number(b.pct);
+    if (!(pct > 0 && pct <= (b.kind === 'peak' ? 100 : 90))) throw bad(b.kind === 'peak' ? 'Peak surcharge must be between 1% and 100%.' : 'Discounts must be between 1% and 90%.');
+    if (b.kind === 'peak' && (!isDate(b.start_date) || !isDate(b.end_date))) throw bad('Peak pricing needs a start and end date.');
+    const code = b.kind === 'promo' ? String(b.code || '').trim().toUpperCase() : null;
+    if (b.kind === 'promo' && !/^[A-Z0-9]{4,16}$/.test(code)) throw bad('Promo codes are 4–16 letters or digits.');
+    try {
+      res.status(201).json(db.prepare(`INSERT INTO pricing_rules (operator_id, kind, name, pct, code, start_date, end_date, max_uses) VALUES (?,?,?,?,?,?,?,?) RETURNING *`)
+        .get(req.operatorId, b.kind, b.name.trim(), pct, code, b.start_date || null, b.end_date || null, b.max_uses ? Number(b.max_uses) : null));
+    } catch (e) { if (String(e.message).includes('UNIQUE')) throw conflict('That promo code is already in use.'); throw e; }
+  });
+  r.put('/operator/pricing/:id', ...ownerOps, (req, res) => {
+    const p = mine('pricing_rules', req.params.id, req.operatorId);
+    db.prepare('UPDATE pricing_rules SET active = ? WHERE id = ?').run(req.body.active ? 1 : 0, p.id);
+    res.json({ ok: true });
+  });
+
+  /* ---------- parcels ---------- */
+  r.get('/operator/parcels', ...desk, (req, res) => {
+    res.json(db.prepare(`SELECT p.*, t.service_date, t.depart_at, b.plate FROM parcels p LEFT JOIN trips t ON t.id = p.trip_id LEFT JOIN buses b ON b.id = t.bus_id
+      WHERE p.operator_id = ? ORDER BY p.id DESC LIMIT 200`).all(req.operatorId));
+  });
+  r.post('/operator/parcels', ...desk, (req, res) => {
+    const b = req.body;
+    required(b, ['from_city', 'to_city', 'sender_name', 'sender_phone', 'receiver_name', 'receiver_phone', 'description', 'weight_kg', 'fee']);
+    if (b.trip_id) mine('trips', b.trip_id, req.operatorId);
+    const p = db.prepare(`INSERT INTO parcels (ref, operator_id, trip_id, from_city, to_city, sender_name, sender_phone, receiver_name, receiver_phone, description, weight_kg, fee, created_by)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *`).get(ref('PC', 6), req.operatorId, b.trip_id || null, b.from_city, b.to_city, b.sender_name.trim(), normPhone(b.sender_phone),
+      b.receiver_name.trim(), normPhone(b.receiver_phone), b.description.trim(), Number(b.weight_kg), Number(b.fee), req.user.id);
+    notifyContact(db, { phone: p.receiver_phone, kind: 'parcel', body: `MyTicket: Parcel ${p.ref} from ${p.sender_name} is on its way to ${p.to_city} with ${req.user.operator_name}. Collect with your ID and this reference.` });
+    res.status(201).json(p);
+  });
+  r.put('/operator/parcels/:id', ...desk, (req, res) => {
+    const p = mine('parcels', req.params.id, req.operatorId);
+    const st = req.body.status;
+    if (!['received', 'loaded', 'in_transit', 'arrived', 'collected', 'cancelled'].includes(st)) throw bad('Unknown parcel status.');
+    db.prepare("UPDATE parcels SET status = ?, trip_id = COALESCE(?, trip_id), updated_at = datetime('now') WHERE id = ?").run(st, req.body.trip_id || null, p.id);
+    if (st === 'arrived') notifyContact(db, { phone: p.receiver_phone, kind: 'parcel', body: `MyTicket: Parcel ${p.ref} has arrived in ${p.to_city}. Collect it at the ${req.user.operator_name} office with your ID.` });
+    res.json({ ok: true });
+  });
+
+  /* ---------- reviews ---------- */
+  r.get('/operator/reviews', ...owner, (req, res) => {
+    res.json({
+      summary: db.prepare('SELECT COUNT(*) n, ROUND(AVG(cleanliness),2) cleanliness, ROUND(AVG(punctuality),2) punctuality, ROUND(AVG(driver),2) driver FROM reviews WHERE operator_id = ?').get(req.operatorId),
+      recent: db.prepare(`SELECT rv.*, b.ref, b.contact_name, t.service_date, rt.name route_name FROM reviews rv JOIN bookings b ON b.id = rv.booking_id JOIN trips t ON t.id = rv.trip_id JOIN routes rt ON rt.id = t.route_id
+        WHERE rv.operator_id = ? ORDER BY rv.id DESC LIMIT 50`).all(req.operatorId),
+    });
+  });
+
+  /* ---------- finance ---------- */
+  r.get('/operator/finance', ...owner, (req, res) => {
+    const op = req.operatorId;
+    const days = Math.min(Number(req.query.days) || 30, 366);
+    const since = addDays(localDate(), -days + 1);
+    const daily = db.prepare(`SELECT t.service_date day, COUNT(DISTINCT b.id) bookings, SUM(b.fare_total - b.discount) gross, SUM(b.commission) commission,
+        (SELECT COUNT(*) FROM booking_seats bs JOIN bookings bb ON bb.id = bs.booking_id WHERE bb.operator_id = ? AND bs.active = 1 AND bs.trip_id IN (SELECT id FROM trips WHERE service_date = t.service_date AND operator_id = ?)) seats
+      FROM bookings b JOIN trips t ON t.id = b.trip_id WHERE b.operator_id = ? AND b.status IN ('confirmed','completed') AND t.service_date >= ? AND t.service_date <= ? GROUP BY t.service_date ORDER BY day`).all(op, op, op, since, localDate());
+    const routes = db.prepare(`SELECT r.name, COUNT(DISTINCT t.id) trips, SUM(l.capacity) capacity_sum,
+        (SELECT COUNT(*) FROM booking_seats bs JOIN trips t2 ON t2.id = bs.trip_id WHERE t2.route_id = r.id AND bs.active = 1 AND t2.service_date >= ? AND t2.service_date <= ?) seats
+      FROM routes r JOIN trips t ON t.route_id = r.id JOIN buses b ON b.id = t.bus_id JOIN layouts l ON l.id = b.layout_id
+      WHERE r.operator_id = ? AND t.service_date >= ? AND t.service_date <= ? AND t.status != 'cancelled' GROUP BY r.id ORDER BY seats DESC`).all(since, localDate(), op, since, localDate());
+    res.json({ days, daily, routes: routes.map(r => ({ ...r, occupancy: r.capacity_sum ? Math.round(r.seats / r.capacity_sum * 100) : 0 })), balance: balance(db, op),
+      settlements: db.prepare('SELECT * FROM settlements WHERE operator_id = ? ORDER BY id DESC LIMIT 50').all(op) });
+  });
+  r.post('/operator/settlements', ...ownerOps, (req, res) => {
+    const o = db.prepare('SELECT * FROM operators WHERE id = ?').get(req.operatorId);
+    if (!o.bank_account) throw bad('Add your company bank account in Company profile before withdrawing.');
+    const bal = balance(db, req.operatorId);
+    const amount = money(Number(req.body.amount));
+    if (!(amount >= 100)) throw bad('The minimum withdrawal is K100.');
+    if (amount > bal.available) throw bad(`You can withdraw up to K${bal.available.toFixed(2)} right now.`);
+    res.status(201).json(db.prepare('INSERT INTO settlements (operator_id, amount, bank_snapshot) VALUES (?,?,?) RETURNING *').get(req.operatorId, amount, `${o.bank_name} ${o.bank_account} ${o.bank_branch || ''}`.trim()));
+  });
+
+  return r;
+}
+
+/**
+ * Operator balance (kwacha).
+ *   earned    = completed trips: fare − promo discount − platform commission
+ *             + cancelled paid bookings: what the operator keeps after the refund
+ *   pending   = confirmed bookings on trips that have not run yet (withdrawable once completed)
+ *   available = earned − withdrawals requested or paid
+ * On a reschedule the old booking keeps its fare (as a cancelled, paid booking) and the new booking only
+ * counts the new money, so the fare is never counted twice.
+ */
+export function balance(db, operatorId) {
+  const sum = status => db.prepare(`SELECT COALESCE(SUM(fare_total - discount - commission), 0) v FROM bookings WHERE operator_id = ? AND status = ?`).get(operatorId, status).v;
+  const kept = db.prepare(`SELECT COALESCE(SUM(MAX(0, b.fare_total - b.discount - b.commission
+      - MIN(b.fare_total - b.discount, COALESCE((SELECT SUM(r.amount) FROM refunds r WHERE r.booking_id = b.id), 0)))), 0) v
+    FROM bookings b WHERE b.operator_id = ? AND b.status = 'cancelled' AND b.confirmed_at IS NOT NULL`).get(operatorId).v;
+  const withdrawn = db.prepare("SELECT COALESCE(SUM(amount), 0) v FROM settlements WHERE operator_id = ? AND status IN ('requested','paid')").get(operatorId).v;
+  const earned = sum('completed') + kept;
+  return { earned: money(earned), pending: money(sum('confirmed')), withdrawn: money(withdrawn), available: money(earned - withdrawn) };
+}
