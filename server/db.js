@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { config } from './config.js';
 
 const SCHEMA = `
@@ -435,8 +436,10 @@ export function openDb(file = config.dbFile) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
+  registerAuditHash(db);
   db.exec(SCHEMA);
   migrate(db);
+  sealAudit(db);
   const ins = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
   for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) ins.run(k, v);
   return db;
@@ -498,7 +501,51 @@ function migrate(db) {
   add('booking_seats', 'id_hint', 'TEXT');
   add('users', 'pin_hash', 'TEXT');
   add('seat_holds', 'ip', 'TEXT');                     // anti-hoarding: seats held per network
-  add('pricing_rules', 'per_phone_limit', 'INTEGER'); // promo uses allowed per phone number (NULL = no limit) // supervisor PIN (company owners) for approving voids // masked ID shown on screens; id_number itself is encrypted
+  add('pricing_rules', 'per_phone_limit', 'INTEGER');
+  add('audit_log', 'prev_hash', 'TEXT');
+  add('audit_log', 'hash', 'TEXT'); // promo uses allowed per phone number (NULL = no limit) // supervisor PIN (company owners) for approving voids // masked ID shown on screens; id_number itself is encrypted
+}
+
+/* ---------- tamper-evident audit log ----------
+ * Every row stores hash = HMAC(APP_SECRET, previous hash + this row's fields). A trigger fills it in on insert,
+ * other triggers refuse edits and deletes, and verifyAudit() recomputes the chain. Changing or removing any row
+ * breaks every hash after it, and the chain cannot be rebuilt without the secret.
+ */
+function registerAuditHash(db) {
+  db.function('mt_audit_hash', { deterministic: true }, (prev, id, at, userId, action, entity, entityId, detail) =>
+    crypto.createHmac('sha256', config.secret).update(JSON.stringify([prev ?? '', id, at, userId ?? null, action, entity ?? null, entityId ?? null, detail ?? null])).digest('hex'));
+}
+const AUDIT_TRIGGERS = `
+CREATE TRIGGER IF NOT EXISTS audit_chain AFTER INSERT ON audit_log BEGIN
+  UPDATE audit_log SET prev_hash = (SELECT hash FROM audit_log WHERE id < NEW.id ORDER BY id DESC LIMIT 1),
+    hash = mt_audit_hash((SELECT hash FROM audit_log WHERE id < NEW.id ORDER BY id DESC LIMIT 1), NEW.id, NEW.at, NEW.user_id, NEW.action, NEW.entity, NEW.entity_id, NEW.detail)
+  WHERE id = NEW.id;
+END;
+CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit_log WHEN OLD.hash IS NOT NULL BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit log is append-only'); END;`;
+
+/** Hash rows written before the chain existed (older databases), then switch the triggers on. */
+function sealAudit(db) {
+  const rows = db.prepare('SELECT * FROM audit_log WHERE hash IS NULL ORDER BY id').all();
+  if (rows.length) {
+    db.exec('DROP TRIGGER IF EXISTS audit_chain');
+    let prev = db.prepare('SELECT hash FROM audit_log WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1').get()?.hash ?? null;
+    const up = db.prepare('UPDATE audit_log SET prev_hash = ?, hash = mt_audit_hash(?, id, at, user_id, action, entity, entity_id, detail) WHERE id = ?');
+    for (const r of rows) { up.run(prev, prev, r.id); prev = db.prepare('SELECT hash FROM audit_log WHERE id = ?').get(r.id).hash; }
+  }
+  db.exec(AUDIT_TRIGGERS);
+}
+
+/** Recompute the chain. Returns { ok, checked, broken_at? }. */
+export function verifyAudit(db) {
+  let prev = null, checked = 0;
+  for (const r of db.prepare('SELECT * FROM audit_log ORDER BY id').iterate()) {
+    const expect = db.prepare('SELECT mt_audit_hash(?, ?, ?, ?, ?, ?, ?, ?) h').get(prev, r.id, r.at, r.user_id, r.action, r.entity, r.entity_id, r.detail).h;
+    if (r.prev_hash !== prev && !(r.prev_hash == null && prev == null)) return { ok: false, checked, broken_at: r.id, reason: 'link to the previous entry is wrong (an entry was removed or inserted)' };
+    if (r.hash !== expect) return { ok: false, checked, broken_at: r.id, reason: 'this entry was changed' };
+    prev = r.hash; checked++;
+  }
+  return { ok: true, checked, last_hash: prev };
 }
 
 /** Run fn inside a write transaction. BEGIN IMMEDIATE serialises writers, so check-then-insert is safe. */

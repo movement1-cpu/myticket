@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { tx, setting } from '../db.js';
+import { tx, setting, verifyAudit } from '../db.js';
 import { requireRole, hashPassword } from '../auth.js';
 import { bad, notFound, conflict, forbidden, required, normPhone, money, localDate, addDays, isDate } from '../util.js';
 import { notifyContact, queue } from '../services/notify.js';
@@ -254,6 +254,11 @@ export default function adminRoutes(db) {
     const u = db.prepare("INSERT INTO users (role, name, phone, email, password_hash) VALUES ('admin',?,?,?,?) RETURNING id, name, phone").get(req.body.name, phone, req.body.email || null, hashPassword(req.body.password));
     audit(req, 'create_admin', 'user', u.id);
     res.status(201).json(u);
+  });
+  r.get('/admin/audit/verify', admin, (req, res) => {
+    const v = verifyAudit(db);
+    audit(req, 'audit_verified', 'audit_log', '-', v.ok ? `${v.checked} entries ok` : `BROKEN at ${v.broken_at}`);
+    res.json(v);
   });
   r.get('/admin/audit', admin, (_req, res) => res.json(db.prepare('SELECT a.*, u.name FROM audit_log a LEFT JOIN users u ON u.id = a.user_id ORDER BY a.id DESC LIMIT 200').all()));
 

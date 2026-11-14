@@ -958,3 +958,20 @@ test('the same booking request sent twice (double tap / retry) creates one booki
   assert.equal(p1.body.payment_id, p2.body.payment_id);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM payments WHERE group_ref = ?').get(g).n, 1);
 });
+
+/* ---------------- Security step 9: tamper-evident audit log ---------------- */
+test('audit log: hash-chained, edits and deletes refused, tampering detected', async () => {
+  const v = (await api('GET', '/api/admin/audit/verify', { token: tokens.admin })).body;
+  assert.equal(v.ok, true, JSON.stringify(v));
+  assert.ok(v.checked > 10);
+  assert.throws(() => db.prepare("UPDATE audit_log SET detail = 'nothing to see' WHERE id = 1").run(), /append-only/);
+  assert.throws(() => db.prepare('DELETE FROM audit_log WHERE id = 1').run(), /append-only/);
+  // Someone with raw database access drops the guard and quietly edits an old entry: verification catches it.
+  const target = db.prepare("SELECT id FROM audit_log WHERE action = 'void_sale' LIMIT 1").get()?.id || 2;
+  db.exec('DROP TRIGGER audit_no_update');
+  db.prepare("UPDATE audit_log SET detail = 'K0 · nothing happened' WHERE id = ?").run(target);
+  const broken = (await api('GET', '/api/admin/audit/verify', { token: tokens.admin })).body;
+  assert.equal(broken.ok, false);
+  assert.equal(broken.broken_at, target);
+  assert.match(broken.reason, /changed/);
+});

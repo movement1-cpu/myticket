@@ -230,8 +230,17 @@ async function notify(main) {
 
 async function audit(main) {
   const list = await api('/admin/audit');
-  main.innerHTML = html`<div class="head"><h1>Audit log</h1></div><div class="tablewrap"><table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Item</th><th>Detail</th></tr></thead><tbody>
-    ${list.map(a => html`<tr><td class="small">${a.at}</td><td>${a.name || 'system'}</td><td>${a.action}</td><td class="small">${a.entity} ${a.entity_id}</td><td class="small" style="max-width:420px">${a.detail || ''}</td></tr>`)}</tbody></table></div>`;
+  main.innerHTML = html`<div class="head"><h1>Audit log</h1><button class="btn" id="verify">Verify the log</button></div>
+    <p class="small muted" style="margin:0">Every entry is chained to the one before with a keyed hash. Nobody can edit or delete entries, and verification shows if anything was changed directly in the database.</p>
+    <div id="vres"></div>
+    <div class="tablewrap"><table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Item</th><th>Detail</th><th>Hash</th></tr></thead><tbody>
+    ${list.map(a => html`<tr><td class="small">${a.at}</td><td>${a.name || 'system'}</td><td>${a.action}</td><td class="small">${a.entity || ''} ${a.entity_id || ''}</td><td class="small" style="max-width:380px">${a.detail || ''}</td><td class="mono small muted">${(a.hash || '').slice(0, 10)}</td></tr>`)}</tbody></table></div>`;
+  $('#verify', main).addEventListener('click', e => busy(e.target, async () => {
+    const v = await api('/admin/audit/verify');
+    $('#vres', main).innerHTML = v.ok
+      ? html`<div class="notice ok"><b>Intact.</b> ${v.checked} entries checked. Latest hash <span class="mono">${v.last_hash.slice(0, 16)}…</span>. Write it down or send it somewhere outside this system now and then, so even the newest entries can be checked later.</div>`
+      : html`<div class="notice bad"><b>The log was tampered with at entry ${v.broken_at}:</b> ${v.reason}. ${v.checked} entries before it are intact. Investigate who had direct database access.</div>`;
+  }));
 }
 
 const VIEWS = { overview, operators, disputes, payments, settlements, fees, promos, notify, audit };
