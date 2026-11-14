@@ -1013,3 +1013,21 @@ test('station clerk only sells and sees trips boarding at their station', async 
   const ownerTrips = (await api('GET', `/api/operator/trips?date=${addDays(localDate(), 6)}`, { token: tokens.operator })).body;
   assert.ok(ownerTrips.some(t => t.id === fromKitwe.trip_id), 'the owner still sees everything');
 });
+
+/* ---------------- Security step 11: regression checks run in CI ---------------- */
+test('security headers and error responses', async () => {
+  const res = await fetch(base + '/');
+  const csp = res.headers.get('content-security-policy');
+  assert.match(csp, /script-src 'self'/); assert.match(csp, /frame-ancestors 'none'/); assert.match(csp, /object-src 'none'/);
+  assert.equal(res.headers.get('x-frame-options'), 'DENY');
+  assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(res.headers.get('x-powered-by'), null);
+  const raw = await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"phone":' });
+  const body = await raw.json();
+  assert.equal(raw.status, 400);
+  assert.doesNotMatch(JSON.stringify(body), /at .*\.js:\d+/, 'no stack traces leak');
+  const missing = await api('GET', '/api/does-not-exist');
+  assert.equal(missing.status, 404);
+  // Uploaded files cannot be fetched without the right session
+  assert.equal((await api('GET', '/api/documents/1')).status, 401);
+});

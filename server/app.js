@@ -27,7 +27,9 @@ export function createApp(db) {
       'Referrer-Policy': 'same-origin',
       'X-Frame-Options': 'DENY',
       'Permissions-Policy': 'camera=(self), geolocation=(self)',
-      'Content-Security-Policy': "default-src 'self'; img-src 'self' data: https://*.tile.openstreetmap.org; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; connect-src 'self'",
+      ...(config.baseUrl.startsWith('https://') ? { 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains' } : {}),
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Content-Security-Policy': "default-src 'self'; img-src 'self' data: https://*.tile.openstreetmap.org; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'",
     });
     next();
   });
