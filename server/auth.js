@@ -68,7 +68,8 @@ export const revokeAllSessions = (db, userId, exceptId = null) =>
 /** Loads req.user from the session cookie or Bearer token. Never rejects on its own (except CSRF). */
 export function authenticate(db) {
   const getUser = db.prepare(`SELECT u.id, u.role, u.name, u.phone, u.email, u.operator_id, u.active, u.lang, u.phone_verified, u.totp_enabled, u.admin_scope,
-      o.status AS operator_status, o.name AS operator_name
+      o.status AS operator_status, o.name AS operator_name,
+      (SELECT station_city FROM staff st WHERE st.user_id = u.id AND st.active = 1) AS station_city
     FROM users u LEFT JOIN operators o ON o.id = u.operator_id WHERE u.id = ?`);
   const getSession = db.prepare(`SELECT * FROM sessions WHERE id = ? AND revoked_at IS NULL AND expires_at > datetime('now')
     AND datetime(last_seen, '+' || idle_minutes || ' minutes') > datetime('now')`);

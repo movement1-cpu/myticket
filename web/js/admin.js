@@ -1,14 +1,17 @@
 import { $, $$, html, raw, api, auth, toast, modal, busy, formData, kwacha, kw0, dayOf, today, pill, openBlob, bars, phoneFmt } from './core.js';
 
+// [key, label, scopes that may open it]
 const SECTIONS = [
-  ['overview', 'Overview'], ['operators', 'Bus companies'], ['disputes', 'Complaints & disputes'], ['payments', 'Payments & refunds'],
-  ['settlements', 'Operator payouts'], ['fees', 'Fees & commission'], ['promos', 'Promo codes'], ['notify', 'Notifications'], ['audit', 'Audit log'],
+  ['overview', 'Overview', ['full', 'finance']], ['operators', 'Bus companies', ['full', 'support']], ['disputes', 'Complaints & disputes', ['full', 'finance', 'support']],
+  ['payments', 'Payments & refunds', ['full', 'finance']], ['settlements', 'Operator payouts', ['full', 'finance']], ['fees', 'Fees & settings', ['full', 'finance']],
+  ['promos', 'Promo codes', ['full', 'finance']], ['notify', 'Notifications', ['full', 'support']], ['admins', 'Admins', ['full']], ['audit', 'Audit log', ['full', 'finance']],
 ];
-
 export async function render(app, section) {
-  if (!SECTIONS.some(s => s[0] === section)) { location.hash = '#/admin/overview'; return; }
-  app.innerHTML = html`<div class="shell"><nav class="side" aria-label="Admin sections"><span class="label">Platform admin</span>
-    ${SECTIONS.map(([k, l]) => html`<a href="#/admin/${k}" class="${k === section ? 'on' : ''}">${l}</a>`)}</nav><div class="main" id="main"><div class="empty"><span class="spinner"></span></div></div></div>`;
+  const sc = auth.user.admin_scope || 'full';
+  const allowed = SECTIONS.filter(s => s[2].includes(sc));
+  if (!allowed.some(s => s[0] === section)) { location.hash = `#/admin/${allowed[0][0]}`; return; }
+  app.innerHTML = html`<div class="shell"><nav class="side" aria-label="Admin sections"><span class="label">Platform admin · ${sc}</span>
+    ${allowed.map(([k, l]) => html`<a href="#/admin/${k}" class="${k === section ? 'on' : ''}">${l}</a>`)}</nav><div class="main" id="main"><div class="empty"><span class="spinner"></span></div></div></div>`;
   const main = $('#main', app);
   try { await VIEWS[section](main); } catch (e) { main.innerHTML = html`<div class="notice bad">${e.message}</div>`; }
 }
@@ -228,6 +231,31 @@ async function notify(main) {
   }); });
 }
 
+async function admins(main) {
+  const list = await api('/admin/admins');
+  const desc = { full: 'Everything', finance: 'Payouts, refunds, payments, analytics, audit', support: 'Complaints and trip notices; no refunds, masked phone numbers' };
+  main.innerHTML = html`<div class="head"><h1>Admins</h1><button class="btn" id="add">Add admin</button></div>
+    <p class="small muted" style="margin:0">Give each person the narrowest role that lets them do their job. Every admin must use two-step sign-in. Changing someone's role signs them out.</p>
+    <div class="tablewrap"><table><thead><tr><th>Name</th><th>Phone</th><th>Role</th><th>Two-step</th><th>Status</th><th></th></tr></thead><tbody>
+      ${list.map(a => html`<tr style="${a.active ? '' : 'opacity:.55'}"><td><b>${a.name}</b>${a.id === auth.user.id ? raw(' <span class="tag">you</span>') : ''}</td><td class="num">${phoneFmt(a.phone)}</td>
+        <td><select data-scope="${a.id}" style="width:auto">${['full', 'finance', 'support'].map(x => html`<option value="${x}" ${a.admin_scope === x ? 'selected' : ''}>${x}</option>`)}</select><div class="small muted">${desc[a.admin_scope]}</div></td>
+        <td>${a.totp_enabled ? raw('<span class="pill ok">app</span>') : raw('<span class="pill warn">SMS only</span>')}</td><td>${pill(a.active ? 'active' : 'retired')}</td>
+        <td>${a.id === auth.user.id ? '' : html`<button class="btn ghost sm" data-active="${a.id}" data-on="${a.active}">${a.active ? 'Deactivate' : 'Reactivate'}</button>`}</td></tr>`)}</tbody></table></div>`;
+  const reload = () => admins(main);
+  main.addEventListener('change', e => { const sel = e.target.closest('[data-scope]'); if (sel) api('/admin/admins/' + sel.dataset.scope, { method: 'PUT', body: { admin_scope: sel.value } }).then(() => { toast('Role changed. They were signed out.'); reload(); }).catch(err => { toast(err.message, true); reload(); }); });
+  main.addEventListener('click', e => { const b = e.target.closest('[data-active]'); if (b) busy(b, async () => { await api('/admin/admins/' + b.dataset.active, { method: 'PUT', body: { active: b.dataset.on !== '1' } }); reload(); }); });
+  $('#add', main).addEventListener('click', () => {
+    const m = modal(html`<h2>Add an admin</h2><form id="af" class="grid2">
+      <label class="field"><span>Name</span><input name="name" required></label><label class="field"><span>Mobile number</span><input name="phone" inputmode="tel" required></label>
+      <label class="field"><span>Role</span><select name="admin_scope"><option value="support">support</option><option value="finance">finance</option><option value="full">full</option></select></label>
+      <label class="field"><span>First password (12+ characters)</span><input name="password" type="password" minlength="12" required autocomplete="new-password"></label>
+      <p class="small muted" style="grid-column:1/-1;margin:0">Give them the password in person. They confirm sign-in by SMS until they set up an authenticator app.</p>
+      <div class="row" style="justify-content:flex-end;grid-column:1/-1"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn">Add admin</button></div></form>`);
+    const f = $('#af', m.el);
+    f.addEventListener('submit', ev => { ev.preventDefault(); busy(f.querySelector('.btn:not(.ghost)'), async () => { await api('/admin/admins', { method: 'POST', body: formData(f) }); m.close(); toast('Admin added.'); reload(); }); });
+  });
+}
+
 async function audit(main) {
   const list = await api('/admin/audit');
   main.innerHTML = html`<div class="head"><h1>Audit log</h1><button class="btn" id="verify">Verify the log</button></div>
@@ -243,4 +271,4 @@ async function audit(main) {
   }));
 }
 
-const VIEWS = { overview, operators, disputes, payments, settlements, fees, promos, notify, audit };
+const VIEWS = { admins, overview, operators, disputes, payments, settlements, fees, promos, notify, audit };

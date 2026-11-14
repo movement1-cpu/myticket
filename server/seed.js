@@ -17,6 +17,7 @@ export const DEMO_TOTP_SECRET = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
 export const DEMO_USERS = [
   { role: 'admin', name: 'Platform Admin', phone: '260950000001' },
   { role: 'admin', name: 'Finance Admin (second approver)', phone: '260950000002' },
+  { role: 'admin', name: 'Support Agent', phone: '260950000003' },
   { role: 'operator', name: 'Mwila Banda (Zambezi Coaches owner)', phone: '260960000002', op: 'Zambezi Coaches' },
   { role: 'clerk', name: 'Chanda Phiri (counter clerk)', phone: '260960000003', op: 'Zambezi Coaches' },
   { role: 'conductor', name: 'Mutale Zulu (conductor)', phone: '260970000004', op: 'Zambezi Coaches' },
@@ -103,6 +104,7 @@ export function seedDemo(db) {
     const Z = 'Zambezi Coaches', C = 'Copperbelt Express';
     const zCond = staff(Z, 'Mutale Zulu', '260970000004', 'conductor', users['260970000004']);
     staff(Z, 'Chanda Phiri', '260960000003', 'clerk', users['260960000003']);
+    db.prepare("UPDATE staff SET station_city = 'Lusaka' WHERE phone = '260960000003'").run(); // the demo clerk works at Lusaka Intercity
     const zDrivers = ['Joseph Mumba', 'Peter Sakala', 'Moses Chilufya', 'Brian Mulenga'].map((n, i) => staff(Z, n, `26097100000${i}`, 'driver', null, `ZM-DL-${40210 + i}`));
     const zCond2 = staff(Z, 'Esther Kunda', '260971000010', 'conductor');
     const cDrivers = ['Henry Ngoma', 'Daniel Bwalya'].map((n, i) => staff(C, n, `26097200000${i}`, 'driver', null, `ZM-DL-${51100 + i}`));
@@ -123,7 +125,9 @@ export function seedDemo(db) {
       const last = stops.at(-1);
       const city = n => TERMINALS.find(t => t[1] === n)[0];
       const id = db.prepare('INSERT INTO routes (operator_id, name, distance_km, duration_min) VALUES (?,?,?,?) RETURNING id').get(ops[op], `${city(stops[0][0])} – ${city(last[0])}`, last[2], last[1]).id;
-      stops.forEach(([n, m, k], i) => db.prepare('INSERT INTO route_stops (route_id, seq, terminal_id, offset_min, km, boarding, dropping) VALUES (?,?,?,?,?,?,?)').run(id, i + 1, T[n], m, k, i < stops.length - 1 ? 1 : 0, i > 0 ? 1 : 0));
+      // Boarding only where a later stop is in another town (nobody boards at Kabangwe to ride into central Lusaka).
+      stops.forEach(([n, m, k], i) => db.prepare('INSERT INTO route_stops (route_id, seq, terminal_id, offset_min, km, boarding, dropping) VALUES (?,?,?,?,?,?,?)')
+        .run(id, i + 1, T[n], m, k, stops.slice(i + 1).some(([n2]) => city(n2) !== city(n)) ? 1 : 0, i > 0 ? 1 : 0));
       return id;
     };
     const R = {
@@ -239,6 +243,8 @@ export function seedDemo(db) {
     db.prepare("INSERT INTO loyalty_ledger (user_id, points, kind, note) VALUES (?, 250, 'adjust', 'Welcome bonus')").run(nat);
     db.prepare('UPDATE users SET phone_verified = 1').run(); // demo accounts count as verified
     db.prepare("UPDATE users SET totp_secret = ?, totp_enabled = 1 WHERE role = 'admin'").run(encrypt(DEMO_TOTP_SECRET));
+    db.prepare("UPDATE users SET admin_scope = 'finance' WHERE phone = '260950000002'").run();
+    db.prepare("UPDATE users SET admin_scope = 'support' WHERE phone = '260950000003'").run();
   });
   protectStoredIds(db); // encrypt the demo ID numbers like real ones
 }

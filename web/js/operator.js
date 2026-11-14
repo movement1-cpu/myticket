@@ -206,7 +206,7 @@ async function counter(main) {
     stops = trip.stops;
     $('#sale', main).innerHTML = html`<div class="booking"><div><div class="small muted" style="margin-bottom:6px">${trip.plate} · ${trip.class}. Seats sold here show as booked on the bus and online straight away.</div><div id="smap"></div></div>
       <form id="sf" class="page" style="gap:10px" autocomplete="off">
-      <div class="grid2"><label class="field"><span>Boarding</span><select name="from">${stops.filter(s => s.boarding).map(s => html`<option value="${s.id}">${s.city} · ${s.terminal}</option>`)}</select></label>
+      <div class="grid2"><label class="field"><span>Boarding</span><select name="from">${stops.filter(s => s.boarding && (!auth.user.station_city || s.city === auth.user.station_city)).map(s => html`<option value="${s.id}">${s.city} · ${s.terminal}</option>`)}</select></label>
         <label class="field"><span>Dropping</span><select name="to">${stops.filter(s => s.dropping).reverse().map(s => html`<option value="${s.id}">${s.city} · ${s.terminal}</option>`)}</select></label></div>
       <div id="pax" class="page" style="gap:10px"><div class="empty small">Tap seats on the bus map.</div></div>
       <div class="grid2"><label class="field"><span>Phone for SMS ticket</span><input name="phone" inputmode="tel" required></label><label class="field"><span>Payment</span><select name="pm"><option value="cash">Cash now</option><option value="station">Reserve, pay later at this counter</option></select></label></div>
@@ -329,10 +329,10 @@ async function fleet(main) {
 
 /* ---------- staff ---------- */
 async function staffView(main) {
-  const list = await api('/operator/staff');
+  const [list, cities] = await Promise.all([api('/operator/staff'), api('/cities')]);
   main.innerHTML = html`<div class="head"><h1>Drivers & staff</h1><button class="btn" id="add">Add person</button></div>
     <div class="tablewrap"><table><thead><tr><th>Name</th><th>Role</th><th>Phone</th><th>Licence</th><th>Login</th><th></th></tr></thead><tbody>
-      ${list.map(s => html`<tr style="${s.active ? '' : 'opacity:.55'}"><td><b>${s.name}</b></td><td>${s.role}</td><td class="num">${phoneFmt(s.phone)}</td><td class="mono">${s.licence_no || ''}</td><td class="small">${s.login_phone ? 'Field app / counter' : '—'}</td>
+      ${list.map(s => html`<tr style="${s.active ? '' : 'opacity:.55'}"><td><b>${s.name}</b></td><td>${s.role}</td><td class="num">${phoneFmt(s.phone)}</td><td class="mono">${s.licence_no || ''}</td><td class="small">${s.login_phone ? 'Field app / counter' : '—'}${s.role === 'clerk' ? html`<br><select data-station="${s.id}" style="width:auto;padding:3px 6px;margin-top:4px" aria-label="Station"><option value="">Any station</option>${cities.map(c => html`<option ${s.station_city === c ? 'selected' : ''}>${c}</option>`)}</select>` : ''}</td>
         <td><div class="row" style="gap:4px;flex-wrap:nowrap">${s.login_phone && s.active ? html`<button class="btn danger sm" data-signout="${s.id}" title="Lost or stolen phone">Sign out all devices</button>` : ''}<button class="btn ghost sm" data-toggle="${s.id}" data-active="${s.active}">${s.active ? 'Deactivate' : 'Reactivate'}</button></div></td></tr>`)}
     </tbody></table></div>`;
   $('#add', main).addEventListener('click', () => {
@@ -340,12 +340,17 @@ async function staffView(main) {
       <label class="field"><span>Full name</span><input name="name" required></label><label class="field"><span>Mobile number</span><input name="phone" inputmode="tel" required></label>
       <label class="field"><span>Role</span><select name="role" id="role"><option value="driver">Driver</option><option value="conductor">Conductor (field app login)</option><option value="clerk">Station clerk (counter login)</option></select></label>
       <label class="field" id="lic"><span>Driver's licence no.</span><input name="licence_no"></label>
-      <label class="field" id="pw" hidden><span>Login password (8+ characters)</span><input name="password" type="password" minlength="8" autocomplete="new-password"></label></div>
+      <label class="field" id="pw" hidden><span>Login password (8+ characters)</span><input name="password" type="password" minlength="8" autocomplete="new-password"></label>
+      <label class="field" id="stn" hidden><span>Works at the station in</span><select name="station_city"><option value="">Any station</option>${cities.map(c => html`<option>${c}</option>`)}</select></label></div>
       <div class="row" style="justify-content:flex-end"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn">Add</button></div></form>`);
     const f = $('#sf', m.el);
-    const sync = () => { $('#lic', f).hidden = f.role.value !== 'driver'; $('#pw', f).hidden = f.role.value === 'driver'; };
+    const sync = () => { $('#lic', f).hidden = f.role.value !== 'driver'; $('#pw', f).hidden = f.role.value === 'driver'; $('#stn', f).hidden = f.role.value !== 'clerk'; };
     f.role.addEventListener('change', sync); sync();
     f.addEventListener('submit', e => { e.preventDefault(); busy(f.querySelector('.btn:not(.ghost)'), async () => { await api('/operator/staff', { method: 'POST', body: formData(f) }); m.close(); toast('Added.'); staffView(main); }); });
+  });
+  main.addEventListener('change', e => {
+    const st = e.target.closest('[data-station]');
+    if (st) api('/operator/staff/' + st.dataset.station, { method: 'PUT', body: { station_city: st.value } }).then(() => toast(st.value ? `Now limited to the ${st.value} station.` : 'Can sell at any station.')).catch(err => toast(err.message, true));
   });
   main.addEventListener('click', e => {
     const b = e.target.closest('[data-toggle]'); if (b) busy(b, async () => { await api('/operator/staff/' + b.dataset.toggle, { method: 'PUT', body: { active: b.dataset.active !== '1' } }); staffView(main); });

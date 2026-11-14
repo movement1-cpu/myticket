@@ -26,6 +26,7 @@ async function api(method, url, { token, body, headers = {} } = {}) {
   return { status: res.status, body: ct.includes('json') ? await res.json() : await res.text(), headers: res.headers };
 }
 async function login(phone) {
+  db.prepare("DELETE FROM rate_limits WHERE key LIKE 'login:ip:%'").run(); // the whole suite signs in from one address
   const r = (await api('POST', '/api/auth/login', { body: { phone, password: DEMO_PASSWORD } })).body;
   if (r.mfa_required) {
     const v = await api('POST', '/api/auth/mfa/verify', { token: r.token, body: { method: 'totp', code: totp(DEMO_TOTP_SECRET) } });
@@ -294,7 +295,7 @@ test('operator: finance balance and settlement limits', async () => {
   assert.equal(tooMuch.status, 400);
   const ok = await api('POST', '/api/operator/settlements', { token: tokens.operator, body: { amount: 100 } });
   assert.equal(ok.status, 201);
-  const csv = await api('GET', `/api/operator/trips/${db.prepare('SELECT trip_id FROM bookings WHERE operator_id = 1 AND status = ? LIMIT 1').get('confirmed').trip_id}/manifest?format=csv`, { token: tokens.clerk });
+  const csv = await api('GET', `/api/operator/trips/${db.prepare('SELECT trip_id FROM bookings WHERE operator_id = 1 AND status = ? LIMIT 1').get('confirmed').trip_id}/manifest?format=csv`, { token: tokens.operator }); // the owner (the clerk is limited to Lusaka departures)
   assert.match(csv.body, /"Seat","Passenger".*"ID number"/);
 });
 
@@ -974,4 +975,41 @@ test('audit log: hash-chained, edits and deletes refused, tampering detected', a
   assert.equal(broken.ok, false);
   assert.equal(broken.broken_at, target);
   assert.match(broken.reason, /changed/);
+});
+
+/* ---------------- Security step 10: narrower roles ---------------- */
+test('admin scopes: finance cannot change settings or approve companies; support cannot refund or see money', async () => {
+  const finance = await login('0950000002'), support = await login('0950000003');
+  assert.equal((await api('PUT', '/api/admin/settings', { token: finance, body: { booking_fee: 1 } })).status, 403);
+  assert.equal((await api('POST', '/api/admin/operators/3/status', { token: finance, body: { status: 'approved', override: true } })).status, 403);
+  assert.equal((await api('GET', '/api/admin/settlements', { token: finance })).status, 200);
+  assert.equal((await api('GET', '/api/admin/analytics', { token: support })).status, 403);
+  assert.equal((await api('GET', '/api/admin/settlements', { token: support })).status, 403);
+  const disputes = (await api('GET', '/api/admin/disputes?status=all', { token: support })).body;
+  assert.ok(disputes.filter(d => d.contact_phone).every(d => d.contact_phone.includes('****')), 'phones masked for support');
+  const open = db.prepare("SELECT id FROM disputes WHERE status = 'open' AND booking_id IS NOT NULL LIMIT 1").get();
+  const r = await api('POST', `/api/admin/disputes/${open.id}/resolve`, { token: support, body: { resolution: 'Sorry', refund_amount: 50 } });
+  assert.equal(r.status, 403);
+  assert.equal((await api('POST', '/api/admin/broadcast', { token: support, body: { audience: 'all_passengers', message: 'hi' } })).status, 403);
+  // Admin management: full only; the last full admin cannot be demoted
+  assert.equal((await api('GET', '/api/admin/admins', { token: finance })).status, 403);
+  const admins = (await api('GET', '/api/admin/admins', { token: tokens.admin })).body;
+  const me = admins.find(a => a.phone === '260950000001');
+  assert.equal((await api('PUT', `/api/admin/admins/${me.id}`, { token: tokens.admin, body: { admin_scope: 'support' } })).status, 409);
+});
+
+test('station clerk only sells and sees trips boarding at their station', async () => {
+  const fromKitwe = (await api('GET', `/api/search?from=Kitwe&to=Lusaka&date=${addDays(localDate(), 6)}`)).body.outbound[0];
+  const trips = (await api('GET', `/api/operator/trips?date=${addDays(localDate(), 6)}`, { token: tokens.clerk })).body;
+  assert.ok(trips.length > 0);
+  assert.ok(!trips.some(t => t.id === fromKitwe.trip_id), 'Kitwe departures hidden from the Lusaka clerk');
+  assert.equal((await api('GET', `/api/operator/trips/${fromKitwe.trip_id}/manifest`, { token: tokens.clerk })).status, 403);
+  const seats = await freeSeats(fromKitwe.trip_id, 1);
+  const hold = (await api('POST', `/api/trips/${fromKitwe.trip_id}/holds`, { token: tokens.clerk, body: { seats } })).body;
+  const sale = await api('POST', '/api/counter/bookings', { token: tokens.clerk, body: { legs: [{ trip_id: fromKitwe.trip_id, hold_token: hold.hold_token, from_stop_id: fromKitwe.boarding_points[0].stop_id, to_stop_id: fromKitwe.dropping_points.at(-1).stop_id, passengers: pax(seats) }],
+    contact: { name: 'X', phone: '0955333444' }, payment_method: 'cash' } });
+  assert.equal(sale.status, 403);
+  assert.match(sale.body.error, /boarding in Lusaka/);
+  const ownerTrips = (await api('GET', `/api/operator/trips?date=${addDays(localDate(), 6)}`, { token: tokens.operator })).body;
+  assert.ok(ownerTrips.some(t => t.id === fromKitwe.trip_id), 'the owner still sees everything');
 });

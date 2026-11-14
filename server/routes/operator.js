@@ -72,6 +72,10 @@ export default function operatorRoutes(db) {
     if (!row) throw notFound();
     return row;
   };
+  /** Clerks tied to a station only work with trips that board in their town. */
+  const stationOf = req => (req.user.role === 'clerk' && req.user.station_city) || null;
+  const tripServesStation = (tripId, city) => !!db.prepare(`SELECT 1 FROM trips t JOIN route_stops rs ON rs.route_id = t.route_id JOIN terminals te ON te.id = rs.terminal_id
+    WHERE t.id = ? AND te.city = ? AND rs.boarding = 1`).get(tripId, city);
   const audit = (req, action, entity, id, detail) => db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?,?,?,?,?)').run(req.user.id, action, entity, String(id), detail ?? null);
 
   /* ---------- company profile & verification ---------- */
@@ -184,7 +188,9 @@ export default function operatorRoutes(db) {
         if (db.prepare('SELECT 1 FROM users WHERE phone = ?').get(phone)) throw conflict('That phone number already has an account.');
         userId = db.prepare('INSERT INTO users (role, name, phone, password_hash, operator_id) VALUES (?,?,?,?,?) RETURNING id').get(role, name.trim(), phone, hashPassword(password), req.operatorId).id;
       }
-      return db.prepare('INSERT INTO staff (operator_id, user_id, name, phone, role, licence_no) VALUES (?,?,?,?,?,?) RETURNING *').get(req.operatorId, userId, name.trim(), phone, role, licence_no || null);
+      const station = role === 'clerk' && req.body.station_city ? String(req.body.station_city) : null;
+      if (station && !db.prepare('SELECT 1 FROM terminals WHERE city = ?').get(station)) throw bad('Choose a town that has a bus station.');
+      return db.prepare('INSERT INTO staff (operator_id, user_id, name, phone, role, licence_no, station_city) VALUES (?,?,?,?,?,?,?) RETURNING *').get(req.operatorId, userId, name.trim(), phone, role, licence_no || null, station);
     });
     res.status(201).json(s);
   });
@@ -200,8 +206,11 @@ export default function operatorRoutes(db) {
     const s = mine('staff', req.params.id, req.operatorId);
     const active = req.body.active === undefined ? s.active : req.body.active ? 1 : 0;
     if (req.body.licence_expiry && !isDate(req.body.licence_expiry)) throw bad('Licence expiry must be a date.');
-    db.prepare('UPDATE staff SET name = ?, licence_no = ?, active = ?, licence_expiry = ? WHERE id = ?')
-      .run(req.body.name || s.name, req.body.licence_no ?? s.licence_no, active, req.body.licence_expiry === undefined ? s.licence_expiry : (req.body.licence_expiry || null), s.id);
+    const station = req.body.station_city === undefined ? s.station_city : (req.body.station_city || null);
+    if (station && !db.prepare('SELECT 1 FROM terminals WHERE city = ?').get(station)) throw bad('Choose a town that has a bus station.');
+    db.prepare('UPDATE staff SET name = ?, licence_no = ?, active = ?, licence_expiry = ?, station_city = ? WHERE id = ?')
+      .run(req.body.name || s.name, req.body.licence_no ?? s.licence_no, active, req.body.licence_expiry === undefined ? s.licence_expiry : (req.body.licence_expiry || null), s.role === 'clerk' ? station : null, s.id);
+    if (station !== s.station_city) audit(req, 'staff_station', 'staff', s.id, station || 'any');
     if (s.user_id) { db.prepare('UPDATE users SET active = ? WHERE id = ?').run(active, s.user_id); if (!active) revokeAllSessions(db, s.user_id); }
     res.json({ ok: true });
   });
@@ -330,7 +339,8 @@ export default function operatorRoutes(db) {
       FROM trips t JOIN routes r ON r.id = t.route_id JOIN buses b ON b.id = t.bus_id JOIN layouts l ON l.id = b.layout_id
       LEFT JOIN staff d ON d.id = t.driver_id LEFT JOIN staff c ON c.id = t.conductor_id
       WHERE t.operator_id = ? AND t.service_date = ? ORDER BY t.depart_at`).all(req.operatorId, date);
-    res.json(rows.map(t => ({ ...t, depart_local: localTime(t.depart_at), blockers: tripBlockers(db, t) })));
+    const st = stationOf(req);
+    res.json(rows.filter(t => !st || tripServesStation(t.id, st)).map(t => ({ ...t, depart_local: localTime(t.depart_at), blockers: tripBlockers(db, t) })));
   });
   r.put('/operator/trips/:id/crew', ...ownerOps, (req, res) => {
     const t = mine('trips', req.params.id, req.operatorId);
@@ -342,6 +352,7 @@ export default function operatorRoutes(db) {
   /** Passenger manifest for police / border checkpoints. ?format=csv for a download. */
   r.get('/operator/trips/:id/manifest', ...desk, (req, res) => {
     const t = mine('trips', req.params.id, req.operatorId);
+    if (stationOf(req) && !tripServesStation(t.id, stationOf(req))) throw forbidden(`You work at the ${stationOf(req)} station. This bus does not board there.`);
     // Full ID numbers only for the official manifest (print / CSV / "show full IDs"), and every viewing is logged.
     const full = req.query.format === 'csv' || req.query.full === '1';
     const rows = db.prepare(`SELECT bs.seat_no, bs.passenger_name, bs.id_type, bs.id_number id_enc, bs.id_hint, bs.gender, bs.is_child, b.contact_phone, b.ref, b.status, b.channel,
@@ -371,7 +382,11 @@ export default function operatorRoutes(db) {
 
   /* ---------- walk-in / counter sales (same live seat inventory) ---------- */
   r.post('/counter/bookings', ...desk, (req, res) => {
-    for (const leg of req.body.legs || []) mine('trips', leg.trip_id, req.operatorId);
+    for (const leg of req.body.legs || []) {
+      mine('trips', leg.trip_id, req.operatorId);
+      const st = stationOf(req);
+      if (st && !db.prepare('SELECT 1 FROM route_stops rs JOIN terminals te ON te.id = rs.terminal_id WHERE rs.id = ? AND te.city = ?').get(leg.from_stop_id, st)) throw forbidden(`You can only sell tickets boarding in ${st}.`);
+    }
     const method = req.body.payment_method === 'station' ? 'station' : 'cash';
     const shift = method === 'cash' ? requireShift(db, req.user) : null;
     const r = createBookings(db, { ...req.body, payment_method: method, user: req.user, channel: req.user.role === 'conductor' ? 'agent' : 'counter' });
@@ -459,6 +474,7 @@ export default function operatorRoutes(db) {
     const b = req.body;
     required(b, ['from_city', 'to_city', 'sender_name', 'sender_phone', 'receiver_name', 'receiver_phone', 'description', 'weight_kg', 'fee']);
     if (b.trip_id) mine('trips', b.trip_id, req.operatorId);
+    if (stationOf(req) && b.from_city !== stationOf(req)) throw forbidden(`You can only register parcels sent from ${stationOf(req)}.`);
     const shift = Number(b.fee) > 0 ? requireShift(db, req.user) : null;
     const p = db.prepare(`INSERT INTO parcels (ref, operator_id, trip_id, from_city, to_city, sender_name, sender_phone, receiver_name, receiver_phone, description, weight_kg, fee, created_by)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *`).get(uniqueRef(db, 'parcels', 'ref', 'PC', 6), req.operatorId, b.trip_id || null, b.from_city, b.to_city, b.sender_name.trim(), normPhone(b.sender_phone),

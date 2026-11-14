@@ -32,7 +32,8 @@ export default function accountRoutes(db) {
   const audit = (userId, action, detail) => db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?,?,?,?,?)').run(userId, action, 'user', String(userId), detail ?? null);
   const publicUser = id => {
     const u = db.prepare(`SELECT u.id, u.role, u.name, u.phone, u.email, u.operator_id, u.lang, u.phone_verified, u.totp_enabled, u.admin_scope,
-      o.status operator_status, o.name operator_name FROM users u LEFT JOIN operators o ON o.id = u.operator_id WHERE u.id = ?`).get(id);
+      o.status operator_status, o.name operator_name,
+      (SELECT station_city FROM staff st WHERE st.user_id = u.id AND st.active = 1) station_city FROM users u LEFT JOIN operators o ON o.id = u.operator_id WHERE u.id = ?`).get(id);
     return u;
   };
   /** Who must use a second step: every admin; bus company owners when the platform requires it; anyone who turned on an authenticator. */
@@ -89,7 +90,7 @@ export default function accountRoutes(db) {
   r.post('/auth/login', (req, res) => {
     required(req.body, ['phone', 'password']);
     const phone = normPhone(req.body.phone);
-    rateLimit(db, `login:ip:${req.ip}`, 30, 900, 'Too many sign-in attempts from this network.');
+    rateLimit(db, `login:ip:${req.ip}`, 60, 900, 'Too many sign-in attempts from this network.'); // stations share one connection
     rateLimit(db, `login:${phone}`, 8, 900, 'Too many sign-in attempts for this number. Wait, or reset your password.');
     const u = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
     if (!u || !u.active || !verifyPassword(req.body.password, u.password_hash)) throw new HttpError(401, 'Phone number or password is wrong.');

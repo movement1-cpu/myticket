@@ -502,6 +502,7 @@ function migrate(db) {
   add('users', 'pin_hash', 'TEXT');
   add('seat_holds', 'ip', 'TEXT');                     // anti-hoarding: seats held per network
   add('pricing_rules', 'per_phone_limit', 'INTEGER');
+  add('staff', 'station_city', 'TEXT'); // clerks: the town of the station they sell at (NULL = any)
   add('audit_log', 'prev_hash', 'TEXT');
   add('audit_log', 'hash', 'TEXT'); // promo uses allowed per phone number (NULL = no limit) // supervisor PIN (company owners) for approving voids // masked ID shown on screens; id_number itself is encrypted
 }
