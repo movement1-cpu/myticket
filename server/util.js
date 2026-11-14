@@ -15,6 +15,16 @@ export function ref(prefix = '', len = 6) {
   return prefix + Array.from(bytes, b => ALPHABET[b % ALPHABET.length]).join('');
 }
 
+/**
+ * A reference that is not already used in table.column. Random refs can collide (6 characters ≈ 1 billion
+ * combinations, so collisions become likely after tens of thousands of rows); check and retry instead of failing.
+ */
+export function uniqueRef(db, table, column, prefix, len) {
+  const q = db.prepare(`SELECT 1 FROM ${table} WHERE ${column} = ?`);
+  for (let i = 0; i < 20; i++) { const r = ref(prefix, len); if (!q.get(r)) return r; }
+  return ref(prefix, len + 2);
+}
+
 export const money = n => Math.round(n * 100) / 100;
 export const nowIso = () => new Date().toISOString();
 export const addMinutes = (d, m) => new Date(new Date(d).getTime() + m * 60000);

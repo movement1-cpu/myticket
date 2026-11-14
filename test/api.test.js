@@ -58,6 +58,8 @@ before(async () => {
   tokens.passenger = await login('0971234567');
   tokens.otherOperator = await login('0960000010');
   tokens.pendingOperator = await login('0960000020');
+  // Cash sales need an open cash shift.
+  for (const k of ['clerk', 'operator', 'conductor']) await api('POST', '/api/counter/shift/open', { token: tokens[k], body: { opening_float: 200 } });
 });
 after(() => { server.close(); fs.rmSync(tmp, { recursive: true, force: true }); });
 
@@ -823,4 +825,51 @@ test('passenger can download their data and delete their account', async () => {
   assert.equal((await api('GET', '/api/me', { token: reg.token })).status, 401);
   assert.equal(db.prepare("SELECT COUNT(*) n FROM users WHERE phone = '260961313131'").get().n, 0, 'phone number removed');
   assert.equal((await api('POST', '/api/auth/register', { body: { name: 'Back Again', phone: '0961313131', password: 'a fresh start here' } })).status, 201, 'the number can register again');
+});
+
+/* ---------------- Security step 5: cash shifts, voids with supervisor PIN ---------------- */
+test('cash shifts: no shift no cash; ledger is append-only; close compares counted cash and alerts on a big shortfall', async () => {
+  const fresh = await login('0960000003'); // the clerk; close and reopen a shift for a clean count
+  const cur = (await api('GET', '/api/counter/shift', { token: fresh })).body;
+  if (cur) await api('POST', '/api/counter/shift/close', { token: fresh, body: { counted_cash: cur.expected_cash } });
+  const t = await firstTrip('Lusaka', 'Kitwe', addDays(localDate(), 4)); // tomorrow's bus was filled by the waitlist test
+  const sell = async () => {
+    const seats = await freeSeats(t.trip_id, 1);
+    const hold = (await api('POST', `/api/trips/${t.trip_id}/holds`, { token: fresh, body: { seats } })).body;
+    return api('POST', '/api/counter/bookings', { token: fresh, body: { legs: [{ trip_id: t.trip_id, hold_token: hold.hold_token, from_stop_id: t.boarding_points[0].stop_id, to_stop_id: t.dropping_points.at(-1).stop_id, passengers: pax(seats) }], contact: { name: 'W', phone: '0955202020' }, payment_method: 'cash' } });
+  };
+  const noShift = await sell();
+  assert.equal(noShift.status, 409);
+  assert.equal(noShift.body.code, 'no_shift');
+  assert.equal((await api('POST', '/api/counter/shift/open', { token: fresh, body: { opening_float: 300 } })).status, 201);
+  const r1 = await sell(), r2 = await sell();
+  assert.equal(r1.status, 201, JSON.stringify(r1.body));
+  const s1 = r1.body, s2 = r2.body;
+  const shift = (await api('GET', '/api/counter/shift', { token: fresh })).body;
+  assert.equal(shift.expected_cash, 300 + s1.total + s2.total);
+  assert.throws(() => db.prepare('DELETE FROM cash_movements WHERE shift_id = ?').run(shift.id), /append-only/);
+  assert.throws(() => db.prepare('UPDATE cash_movements SET amount = 0 WHERE shift_id = ?').run(shift.id), /append-only/);
+
+  // Void needs the owner's supervisor PIN
+  assert.equal((await api('PUT', '/api/operator/supervisor-pin', { token: tokens.operator, body: { password: DEMO_PASSWORD, pin: '1234' } })).status, 400, 'sequential PIN refused');
+  assert.equal((await api('PUT', '/api/operator/supervisor-pin', { token: tokens.operator, body: { password: DEMO_PASSWORD, pin: '4826' } })).status, 200);
+  const ref = s2.bookings[0].ref;
+  const badPin = await api('POST', `/api/counter/void/${ref}`, { token: fresh, body: { reason: 'Wrong seat sold', supervisor_phone: '0960000002', supervisor_pin: '0000' } });
+  assert.equal(badPin.status, 403);
+  const ok = await api('POST', `/api/counter/void/${ref}`, { token: fresh, body: { reason: 'Wrong seat sold', supervisor_phone: '0960000002', supervisor_pin: '4826' } });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(db.prepare('SELECT status FROM bookings WHERE ref = ?').get(ref).status, 'cancelled');
+  const after = (await api('GET', '/api/counter/shift', { token: fresh })).body;
+  assert.equal(after.expected_cash, 300 + s1.total, 'void takes the cash back out of the drawer');
+  assert.ok(db.prepare("SELECT 1 FROM audit_log WHERE action = 'void_sale' AND entity_id = ? AND detail LIKE '%Mwila Banda%'").get(ref));
+  // Close K100 short without notes → refused; with notes → closes and texts the owner
+  const short = after.expected_cash - 100;
+  assert.equal((await api('POST', '/api/counter/shift/close', { token: fresh, body: { counted_cash: short } })).status, 400);
+  const closed = (await api('POST', '/api/counter/shift/close', { token: fresh, body: { counted_cash: short, notes: 'Gave change twice' } })).body;
+  assert.equal(closed.variance, -100);
+  assert.ok(db.prepare("SELECT 1 FROM notifications WHERE kind = 'cash_alert' AND body LIKE '%SHORT by K100.00%'").get());
+  const list = (await api('GET', '/api/operator/shifts', { token: tokens.operator })).body;
+  assert.ok(list.some(s => s.id === shift.id && s.variance === -100 && s.voids === 1));
+  await api('POST', '/api/counter/shift/open', { token: fresh, body: { opening_float: 200 } });
+  tokens.clerk = fresh;
 });

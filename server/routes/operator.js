@@ -5,9 +5,11 @@ import crypto from 'node:crypto';
 import { tx, setting } from '../db.js';
 import { config } from '../config.js';
 import { requireRole, requireApprovedOperator, hashPassword } from '../auth.js';
-import { bad, notFound, conflict, forbidden, required, normPhone, isDate, isTime, ref, money, localDate, localTime, addDays } from '../util.js';
+import { bad, notFound, conflict, forbidden, required, normPhone, isDate, isTime, ref, uniqueRef, money, localDate, localTime, addDays } from '../util.js';
 import { ensureTrips, routeStops } from '../services/trips.js';
 import { createBookings, settleAtCounter, cancelBooking, groupBookings } from '../services/bookings.js';
+import { openShift, requireShift, recordCash, shiftSummary, startShift, endShift, checkSupervisor, voidSale } from '../services/cash.js';
+import { verifyPassword, hashPassword as hashPin } from '../auth.js';
 import { operatorTerms, DEFAULT_LUGGAGE_FEES } from '../services/pricing.js';
 import { dueItems, tripBlockers } from '../services/maintenance.js';
 import { notifyContact, queue } from '../services/notify.js';
@@ -363,7 +365,41 @@ export default function operatorRoutes(db) {
   r.post('/counter/bookings', ...desk, (req, res) => {
     for (const leg of req.body.legs || []) mine('trips', leg.trip_id, req.operatorId);
     const method = req.body.payment_method === 'station' ? 'station' : 'cash';
-    res.status(201).json(createBookings(db, { ...req.body, payment_method: method, user: req.user, channel: req.user.role === 'conductor' ? 'agent' : 'counter' }));
+    const shift = method === 'cash' ? requireShift(db, req.user) : null;
+    const r = createBookings(db, { ...req.body, payment_method: method, user: req.user, channel: req.user.role === 'conductor' ? 'agent' : 'counter' });
+    if (shift) for (const b of r.bookings) recordCash(db, shift.id, { kind: 'sale', amount: b.total, ref: b.ref, bookingId: db.prepare('SELECT id FROM bookings WHERE ref = ?').get(b.ref).id });
+    res.status(201).json(r);
+  });
+  /* ---------- cash shifts ---------- */
+  r.get('/counter/shift', ...desk, (req, res) => {
+    const s = openShift(db, req.user.id);
+    res.json(s ? { ...shiftSummary(db, s), movements: db.prepare('SELECT kind, amount, ref, note, created_at FROM cash_movements WHERE shift_id = ? ORDER BY id DESC LIMIT 50').all(s.id) } : null);
+  });
+  r.post('/counter/shift/open', ...desk, (req, res) => res.status(201).json(startShift(db, req.user, req.body.opening_float)));
+  r.post('/counter/shift/close', ...desk, (req, res) => res.json(endShift(db, req.user, req.body)));
+  r.post('/counter/void/:ref', ...desk, (req, res) => {
+    const b = db.prepare('SELECT * FROM bookings WHERE ref = ? AND operator_id = ?').get(String(req.params.ref).toUpperCase(), req.operatorId);
+    if (!b) throw notFound('No booking with that reference for your company.');
+    const supervisor = checkSupervisor(db, req.user, req.body.supervisor_phone, req.body.supervisor_pin);
+    res.json(voidSale(db, req.user, b, { reason: req.body.reason, supervisor }, cancelBooking));
+  });
+  r.get('/operator/shifts', ...owner, (req, res) => {
+    const rows = db.prepare(`SELECT s.*, u.name clerk FROM cash_shifts s JOIN users u ON u.id = s.user_id WHERE s.operator_id = ? ORDER BY s.id DESC LIMIT 100`).all(req.operatorId);
+    res.json(rows.map(s => ({ ...shiftSummary(db, s), clerk: s.clerk })));
+  });
+  r.get('/operator/shifts/:id', ...owner, (req, res) => {
+    const s = mine('cash_shifts', req.params.id, req.operatorId);
+    res.json({ ...shiftSummary(db, s), movements: db.prepare('SELECT * FROM cash_movements WHERE shift_id = ? ORDER BY id').all(s.id) });
+  });
+  /** The owner's supervisor PIN (4–6 digits) approves voids at the counter. */
+  r.put('/operator/supervisor-pin', ...owner, (req, res) => {
+    const u = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+    if (!verifyPassword(req.body.password, u.password_hash)) throw bad('Your password is wrong.');
+    const pin = String(req.body.pin || '');
+    if (!/^\d{4,6}$/.test(pin) || /^(\d)\1+$/.test(pin) || '0123456789'.includes(pin) || '9876543210'.includes(pin)) throw bad('Use 4 to 6 digits that are not all the same or in a row.');
+    db.prepare('UPDATE users SET pin_hash = ? WHERE id = ?').run(hashPin(pin), u.id);
+    audit(req, 'supervisor_pin_set', 'user', u.id);
+    res.json({ ok: true });
   });
   r.get('/counter/lookup/:ref', ...desk, (req, res) => {
     const q = req.params.ref.toUpperCase();
@@ -371,7 +407,12 @@ export default function operatorRoutes(db) {
     if (!b) throw notFound('No booking with that reference for your company.');
     res.json({ group_ref: b.group_ref, bookings: groupBookings(db, b.group_ref).map(x => ticketData(db, x.ref)) });
   });
-  r.post('/counter/settle/:group', ...desk, (req, res) => res.json(settleAtCounter(db, req.params.group, req.user)));
+  r.post('/counter/settle/:group', ...desk, (req, res) => {
+    const shift = requireShift(db, req.user);
+    const r = settleAtCounter(db, req.params.group, req.user);
+    recordCash(db, shift.id, { kind: 'settle', amount: r.amount, ref: req.params.group });
+    res.json(r);
+  });
   /** Everything a thermal printer ticket needs, including the QR code as SVG. */
   r.get('/counter/receipt/:ref', ...desk, async (req, res) => {
     const t = ticketData(db, req.params.ref);
@@ -410,9 +451,11 @@ export default function operatorRoutes(db) {
     const b = req.body;
     required(b, ['from_city', 'to_city', 'sender_name', 'sender_phone', 'receiver_name', 'receiver_phone', 'description', 'weight_kg', 'fee']);
     if (b.trip_id) mine('trips', b.trip_id, req.operatorId);
+    const shift = Number(b.fee) > 0 ? requireShift(db, req.user) : null;
     const p = db.prepare(`INSERT INTO parcels (ref, operator_id, trip_id, from_city, to_city, sender_name, sender_phone, receiver_name, receiver_phone, description, weight_kg, fee, created_by)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *`).get(ref('PC', 6), req.operatorId, b.trip_id || null, b.from_city, b.to_city, b.sender_name.trim(), normPhone(b.sender_phone),
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *`).get(uniqueRef(db, 'parcels', 'ref', 'PC', 6), req.operatorId, b.trip_id || null, b.from_city, b.to_city, b.sender_name.trim(), normPhone(b.sender_phone),
       b.receiver_name.trim(), normPhone(b.receiver_phone), b.description.trim(), Number(b.weight_kg), Number(b.fee), req.user.id);
+    if (shift) recordCash(db, shift.id, { kind: 'parcel', amount: p.fee, ref: p.ref });
     notifyContact(db, { phone: p.receiver_phone, kind: 'parcel', body: `MyTicket: Parcel ${p.ref} from ${p.sender_name} is on its way to ${p.to_city} with ${req.user.operator_name}. Collect with your ID and this reference.` });
     res.status(201).json(p);
   });

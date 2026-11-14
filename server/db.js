@@ -376,6 +376,27 @@ CREATE TABLE IF NOT EXISTS recovery_codes (
   id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), code_hash TEXT NOT NULL, used_at TEXT
 );
 
+-- Cash accountability at station counters.
+CREATE TABLE IF NOT EXISTS cash_shifts (
+  id INTEGER PRIMARY KEY,
+  operator_id INTEGER NOT NULL REFERENCES operators(id),
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  opened_at TEXT NOT NULL DEFAULT (datetime('now')), opening_float REAL NOT NULL,
+  closed_at TEXT, expected_cash REAL, counted_cash REAL, variance REAL, notes TEXT,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','closed'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_one_open_shift ON cash_shifts(user_id) WHERE status = 'open';
+-- Append-only cash ledger: sales and collections are positive, voids negative. Never edited or deleted.
+CREATE TABLE IF NOT EXISTS cash_movements (
+  id INTEGER PRIMARY KEY,
+  shift_id INTEGER NOT NULL REFERENCES cash_shifts(id),
+  kind TEXT NOT NULL CHECK (kind IN ('sale','settle','parcel','void')),
+  amount REAL NOT NULL, ref TEXT, booking_id INTEGER REFERENCES bookings(id), note TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TRIGGER IF NOT EXISTS cash_movements_no_update BEFORE UPDATE ON cash_movements BEGIN SELECT RAISE(ABORT, 'cash ledger is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS cash_movements_no_delete BEFORE DELETE ON cash_movements BEGIN SELECT RAISE(ABORT, 'cash ledger is append-only'); END;
+
 -- Language preference for phone numbers without an account (USSD / SMS users).
 CREATE TABLE IF NOT EXISTS phone_prefs (phone TEXT PRIMARY KEY, lang TEXT NOT NULL DEFAULT 'en');
 
@@ -467,7 +488,8 @@ function migrate(db) {
   add('users', 'totp_pending_secret', 'TEXT');  // encrypted, during setup
   add('users', 'totp_enabled', 'INTEGER NOT NULL DEFAULT 0');
   add('users', 'admin_scope', "TEXT NOT NULL DEFAULT 'full'");
-  add('booking_seats', 'id_hint', 'TEXT'); // masked ID shown on screens; id_number itself is encrypted
+  add('booking_seats', 'id_hint', 'TEXT');
+  add('users', 'pin_hash', 'TEXT'); // supervisor PIN (company owners) for approving voids // masked ID shown on screens; id_number itself is encrypted
 }
 
 /** Run fn inside a write transaction. BEGIN IMMEDIATE serialises writers, so check-then-insert is safe. */

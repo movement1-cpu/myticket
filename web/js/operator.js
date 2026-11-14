@@ -15,6 +15,7 @@ const SECTIONS = [
   ['pricing', 'Fares & promos', ['operator']],
   ['reviews', 'Reviews', ['operator']],
   ['finance', 'Revenue & payouts', ['operator']],
+  ['cash', 'Cash & shifts', ['operator']],
   ['company', 'Company & verification', ['operator']],
 ];
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -152,10 +153,43 @@ async function counter(main) {
         <label class="chip"><input type="checkbox" id="peach" ${pr.each ? 'checked' : ''}>One slip per passenger</label>
       </div>
       <p class="small muted" style="margin:0">Set the thermal printer as this computer's default printer. To print without the print dialog every time, start Chrome with <span class="mono">--kiosk-printing</span>.</p></details>
+    <div class="card" id="shiftbar"></div>
     <div class="card"><h3>Collect payment for a reservation or reprint a ticket</h3><form id="lk" class="row"><label class="field" style="max-width:260px"><span>Booking reference</span><input name="ref" placeholder="MTXXXXXX" style="text-transform:uppercase" required></label><button class="btn ghost">Look up</button></form><div id="lkres"></div></div>
     <div class="card"><h3>Sell to a walk-in passenger</h3>
       <div class="row"><label class="field" style="max-width:180px"><span>Date</span><input type="date" id="cd" value="${date}" min="${date}"></label><label class="field"><span>Departure</span><select id="ct"></select></label></div>
       <div id="sale"></div></div>`;
+  const drawShift = async () => {
+    const sh = await api('/counter/shift');
+    const bar = $('#shiftbar', main);
+    if (!sh) {
+      bar.innerHTML = html`<div class="head"><div><h3>Cash shift</h3><span class="small muted">Open your shift before taking cash. Count the cash in your drawer first.</span></div>
+        <form id="openf" class="row"><label class="field" style="max-width:180px"><span>Starting cash (float), K</span><input name="opening_float" type="number" min="0" step="0.5" required></label><button class="btn">Open shift</button></form></div>`;
+      const f = $('#openf', bar);
+      f.addEventListener('submit', e => { e.preventDefault(); busy(f.querySelector('button'), async () => { await api('/counter/shift/open', { method: 'POST', body: formData(f) }); toast('Shift open.'); drawShift(); }); });
+      return;
+    }
+    bar.innerHTML = html`<div class="head"><div><h3>Cash shift <span class="pill ok">open</span></h3><span class="small muted">Since ${sh.opened_at.slice(11, 16)} · float ${kwacha(sh.opening_float)}${sh.voids ? ` · ${sh.voids} void${sh.voids > 1 ? 's' : ''}` : ''}</span></div>
+      <div class="row" style="align-items:center"><div style="text-align:right"><span class="label">Cash that should be in the drawer</span><div style="font:800 22px var(--f-display)">${kwacha(sh.expected_cash)}</div></div><button class="btn ghost" id="closeshift">Close shift</button></div></div>`;
+    $('#closeshift', bar).addEventListener('click', () => {
+      const m = modal(html`<h2>Close your shift</h2><p style="margin:0">Count all the cash in the drawer, including the float.</p><form id="cf" class="page" style="gap:10px">
+        <label class="field"><span>Cash counted (K)</span><input name="counted_cash" type="number" min="0" step="0.5" required></label>
+        <label class="field"><span>Notes (required if the count is different)</span><input name="notes" maxlength="500"></label>
+        <div class="row" style="justify-content:flex-end"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn">Close shift</button></div></form>`);
+      const f = $('#cf', m.el);
+      f.addEventListener('submit', e => { e.preventDefault(); busy(f.querySelector('.btn:not(.ghost)'), async () => {
+        const r = await api('/counter/shift/close', { method: 'POST', body: formData(f) });
+        m.el.innerHTML = html`<h2>Shift closed</h2><div class="receipt" style="font-family:var(--f-mono);display:grid;gap:4px">
+          <div class="sumrow"><span>Float</span><span>${kwacha(r.opening_float)}</span></div>
+          ${Object.entries(r.by_kind).map(([k, v]) => html`<div class="sumrow"><span>${{ sale: 'Ticket sales', settle: 'Reservations paid', parcel: 'Parcel fees', void: 'Voids' }[k]} (${v.n})</span><span>${kwacha(v.total)}</span></div>`)}
+          <div class="sumrow total"><span>Expected</span><span>${kwacha(r.expected_cash)}</span></div><div class="sumrow"><span>Counted</span><span>${kwacha(r.counted_cash)}</span></div>
+          <div class="sumrow" style="font-weight:800;color:${r.variance ? 'var(--bad)' : 'var(--ok)'}"><span>Difference</span><span>${r.variance > 0 ? '+' : ''}${kwacha(r.variance)}</span></div></div>
+          <div class="row no-print" style="justify-content:flex-end"><button class="btn ghost" data-close>Done</button><button class="btn" id="pz">Print</button></div>`;
+        $('#pz', m.el).addEventListener('click', () => window.print());
+        drawShift();
+      }); });
+    });
+  };
+  drawShift();
   const savePrinter = () => { printer.set({ w: $('#pw', main).value, auto: $('#pauto', main).checked, tags: $('#ptags', main).checked, each: $('#peach', main).checked }); toast('Printer settings saved on this computer.'); };
   ['#pw', '#pauto', '#ptags', '#peach'].forEach(id => $(id, main).addEventListener('change', savePrinter));
   $('#reprint', main)?.addEventListener('click', () => { printTicket(last); toast(`Printing ${last}…`); });
@@ -213,6 +247,7 @@ async function counter(main) {
         const ref = r.bookings[0].ref;
         toast(v.pm === 'cash' ? `Sold ${ref}. Collect ${kwacha(r.total)}.` : `Reserved ${ref}. Collect ${kwacha(r.total)} before it expires.`);
         if (printer.get().auto) printTicket(ref); else receipt(ref);
+        drawShift();
         $('#ct', main).dispatchEvent(new Event('change'));
         loadTrips().then(() => { $('#ct', main).value = String(trip.id); });
       });
@@ -224,11 +259,25 @@ async function counter(main) {
     const due = r.bookings.filter(b => b.status === 'reserved').reduce((a, b) => a + b.total, 0);
     $('#lkres', main).innerHTML = html`<div class="tablewrap"><table><tbody>${r.bookings.map(b => html`<tr><td class="mono">${b.ref}</td><td>${b.from_city} → ${b.to_city}<br><span class="small muted">${dateTime(b.board_at)}</span></td>
         <td>${b.seats.filter(s => s.active).map(s => html`<div>${s.seat_no} ${s.passenger_name} <span class="small muted">· ${s.luggage.text}</span></div>`)}</td><td>${pill(b.status)}</td><td class="r">${kwacha(b.total)}</td>
-        <td>${['confirmed', 'reserved', 'completed'].includes(b.status) ? html`<button class="btn ghost sm" data-print="${b.ref}">Print</button>` : ''}</td></tr>`)}</tbody></table></div>
+        <td><div class="row" style="gap:4px;flex-wrap:nowrap">${['confirmed', 'reserved', 'completed'].includes(b.status) ? html`<button class="btn ghost sm" data-print="${b.ref}">Print</button>` : ''}${b.status === 'confirmed' && b.payment_method === 'cash' && b.channel !== 'web' ? html`<button class="btn danger sm" data-void="${b.ref}">Void</button>` : ''}</div></td></tr>`)}</tbody></table></div>
       ${due ? html`<button class="btn copper" id="settle">Take ${kwacha(due)} cash, confirm and print</button>` : ''}`;
     $('#settle', main)?.addEventListener('click', ev => busy(ev.target, async () => { await api('/counter/settle/' + r.group_ref, { method: 'POST' }); toast('Paid. Ticket sent by SMS.'); r.bookings.forEach(b => printTicket(b.ref)); lk.requestSubmit(); }));
   }); });
-  main.addEventListener('click', e => { const b = e.target.closest('[data-print]'); if (b) { printTicket(b.dataset.print); toast(`Printing ${b.dataset.print}…`); } });
+  main.addEventListener('click', e => {
+    const b = e.target.closest('[data-print]'); if (b) { printTicket(b.dataset.print); toast(`Printing ${b.dataset.print}…`); }
+    const v = e.target.closest('[data-void]');
+    if (v) {
+      const m = modal(html`<h2>Void ${v.dataset.void}</h2><p style="margin:0">Give the passenger all their cash back from your drawer. A supervisor must approve with their PIN. Voids are logged, and the owner is alerted after several in one shift.</p>
+        <form id="vf" class="page" style="gap:10px"><label class="field"><span>Reason</span><input name="reason" required maxlength="200" placeholder="e.g. sold the wrong date"></label>
+          <div class="grid2"><label class="field"><span>Supervisor's phone</span><input name="supervisor_phone" inputmode="tel" required></label><label class="field"><span>Supervisor PIN</span><input name="supervisor_pin" type="password" inputmode="numeric" maxlength="6" required autocomplete="off"></label></div>
+          <div class="row" style="justify-content:flex-end"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn danger">Void and return cash</button></div></form>`);
+      const f = $('#vf', m.el);
+      f.addEventListener('submit', ev => { ev.preventDefault(); busy(f.querySelector('.danger'), async () => {
+        const r = await api('/counter/void/' + v.dataset.void, { method: 'POST', body: formData(f) });
+        m.close(); toast(`Voided. Give back ${kwacha(r.cash_returned)} in cash.`); drawShift(); $('#lk', main).requestSubmit();
+      }); });
+    }
+  });
   await loadTrips();
   return () => picker?.destroy();
 }
@@ -543,6 +592,29 @@ async function finance(main, days = 30) {
   wf.addEventListener('submit', e => { e.preventDefault(); busy(wf.querySelector('button'), async () => { await api('/operator/settlements', { method: 'POST', body: { amount: Number(wf.amount.value) } }); toast('Payout requested.'); finance(main, days); }); });
 }
 
+/* ---------- cash & shifts ---------- */
+async function cash(main) {
+  const list = await api('/operator/shifts');
+  main.innerHTML = html`<div class="head"><h1>Cash & shifts</h1></div>
+    <p class="small muted" style="margin:0">Every counter shift starts with a counted float and ends with a counted drawer. Sales cannot be deleted, only voided with your supervisor PIN.</p>
+    <form class="card" id="pinf"><h3>Your supervisor PIN</h3><p class="small muted" style="margin:0">Clerks ask you for it to void a sale. Do not share it. Use 4–6 digits, not 1234 or 0000.</p>
+      <div class="row"><label class="field" style="max-width:220px"><span>Your password</span><input type="password" name="password" required autocomplete="current-password"></label>
+      <label class="field" style="max-width:160px"><span>New PIN</span><input type="password" name="pin" inputmode="numeric" maxlength="6" required autocomplete="new-password"></label><button class="btn">Save PIN</button></div></form>
+    <div class="tablewrap"><table><thead><tr><th>Clerk</th><th>Opened</th><th>Closed</th><th class="r">Float</th><th class="r">Takings</th><th class="r">Expected</th><th class="r">Counted</th><th class="r">Difference</th><th class="r">Voids</th><th></th></tr></thead><tbody>
+      ${list.map(sh => html`<tr><td>${sh.clerk}</td><td class="small">${sh.opened_at.slice(0, 16)}</td><td class="small">${sh.closed_at ? sh.closed_at.slice(0, 16) : raw('<span class="pill ok">open</span>')}</td>
+        <td class="r num">${kwacha(sh.opening_float)}</td><td class="r num">${kwacha(sh.takings)}</td><td class="r num">${kwacha(sh.expected_cash)}</td><td class="r num">${sh.counted_cash != null ? kwacha(sh.counted_cash) : ''}</td>
+        <td class="r num">${sh.variance == null ? '' : Math.abs(sh.variance) < 0.01 ? raw('<span class="pill ok">exact</span>') : html`<span class="pill ${Math.abs(sh.variance) > 50 ? 'bad' : 'warn'}">${sh.variance > 0 ? '+' : ''}${kwacha(sh.variance)}</span>`}</td>
+        <td class="r num">${sh.voids ? html`<span style="color:${sh.voids >= 3 ? 'var(--bad)' : 'inherit'}">${sh.voids}</span>` : ''}</td><td><button class="btn ghost sm" data-sh="${sh.id}">Details</button></td></tr>`)}</tbody></table></div>`;
+  const pf = $('#pinf', main);
+  pf.addEventListener('submit', e => { e.preventDefault(); busy(pf.querySelector('button'), async () => { await api('/operator/supervisor-pin', { method: 'PUT', body: formData(pf) }); pf.reset(); toast('Supervisor PIN saved.'); }); });
+  main.addEventListener('click', async e => {
+    const b = e.target.closest('[data-sh]'); if (!b) return;
+    const d = await api('/operator/shifts/' + b.dataset.sh);
+    modal(html`<div class="head"><h2>Shift: ${list.find(x => x.id === d.id).clerk}</h2><button class="btn ghost sm" data-close>Close</button></div>${d.notes ? html`<div class="notice">${d.notes}</div>` : ''}
+      <div class="tablewrap"><table><tbody>${d.movements.map(mv => html`<tr><td class="small">${mv.created_at.slice(11, 16)}</td><td>${mv.kind}</td><td class="mono small">${mv.ref || ''}</td><td class="r num" style="color:${mv.amount < 0 ? 'var(--bad)' : 'inherit'}">${kwacha(mv.amount)}</td><td class="small">${mv.note || ''}</td></tr>`)}</tbody></table></div>`, { wide: true });
+  });
+}
+
 /* ---------- company ---------- */
 async function company(main) {
   const p = await api('/operator/profile');
@@ -585,4 +657,4 @@ async function company(main) {
   }); });
 }
 
-const VIEWS = { dashboard, trips, counter, fleet, staff: staffView, maintenance, routes, schedules, pricing, parcels, reviews, finance, company };
+const VIEWS = { cash, dashboard, trips, counter, fleet, staff: staffView, maintenance, routes, schedules, pricing, parcels, reviews, finance, company };

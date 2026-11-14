@@ -9,7 +9,7 @@ import { hashPassword } from './auth.js';
 import { encrypt, protectStoredIds } from './security.js';
 import { ensureTrips } from './services/trips.js';
 import { priceLeg } from './services/pricing.js';
-import { localDate, addDays, ref, isoWeekday } from './util.js';
+import { localDate, addDays, ref, uniqueRef, isoWeekday } from './util.js';
 
 export const DEMO_PASSWORD = 'demo1234';
 // Development only: the demo admins' authenticator secret, so the demo and the tests can complete two-step sign-in.
@@ -182,7 +182,7 @@ export function seedDemo(db) {
           const channel = rand() < 0.3 ? 'counter' : 'web';
           const method = channel === 'counter' ? 'cash' : pick(['mtn', 'mtn', 'airtel', 'airtel', 'zamtel', 'card']);
           const created = `${addDays(date, -1 - Math.floor(rand() * 5))} 12:00:00`;
-          const b = insB.get(ref('MT', 6), ref('G', 8), channel === 'web' ? p.id : null, channel === 'web' ? p.id : users['260960000003'], t.id, t.operator_id, channel, d < 0 ? 'completed' : 'confirmed',
+          const b = insB.get(uniqueRef(db, 'bookings', 'ref', 'MT', 6), uniqueRef(db, 'bookings', 'group_ref', 'G', 8), channel === 'web' ? p.id : null, channel === 'web' ? p.id : users['260960000003'], t.id, t.operator_id, channel, d < 0 ? 'completed' : 'confirmed',
             from.id, to.id, p.name, p.phone, null, price.fare_total, 0, price.booking_fee, price.total, price.commission, method, created, created);
           seats.forEach((s, k) => insS.run(b.id, t.id, s, k === 0 ? p.name : pick(names), 'NRC', nrc(), pick(['F', 'M']), passengers[k].is_child ? 1 : 0, price.seat_fares[k], d < 0 ? t.depart_at : null));
           db.prepare("INSERT INTO payments (group_ref, provider, amount, status, provider_ref, created_at) SELECT group_ref, ?, total, 'success', ?, created_at FROM bookings WHERE id = ?").run(method, `SEED-${b.id}`, b.id);
@@ -199,7 +199,7 @@ export function seedDemo(db) {
       const stops = db.prepare('SELECT * FROM route_stops WHERE route_id = ? ORDER BY seq').all(routeId);
       const free = seats.filter(s => !db.prepare('SELECT 1 FROM booking_seats WHERE trip_id = ? AND seat_no = ? AND active = 1').get(t.id, s));
       const price = priceLeg(db, { trip: t, fromStop: stops[0], toStop: stops.at(-1), passengers: free.map(() => ({})), promo: null });
-      const b = insB.get(ref('MT', 6), ref('G', 8), nat, nat, t.id, t.operator_id, 'web', status, stops[0].id, stops.at(-1).id, 'Natasha Mwale', '260971234567', 'natasha@example.com',
+      const b = insB.get(uniqueRef(db, 'bookings', 'ref', 'MT', 6), uniqueRef(db, 'bookings', 'group_ref', 'G', 8), nat, nat, t.id, t.operator_id, 'web', status, stops[0].id, stops.at(-1).id, 'Natasha Mwale', '260971234567', 'natasha@example.com',
         price.fare_total, 0, price.booking_fee, price.total, price.commission, 'mtn', `${addDays(date, -3)} 09:00:00`, `${addDays(date, -3)} 09:00:00`);
       free.forEach((s, k) => insS.run(b.id, t.id, s, k ? 'Kabwe Mwale' : 'Natasha Mwale', 'NRC', k ? '334455/10/1' : '221133/11/1', k ? 'M' : 'F', 0, price.seat_fares[k], status === 'completed' ? t.depart_at : null));
       db.prepare("INSERT INTO payments (group_ref, provider, msisdn, amount, status, provider_ref) SELECT group_ref, 'mtn', '260961234567', total, 'success', 'SEED' FROM bookings WHERE id = ?").run(b.id);

@@ -1,5 +1,5 @@
 import { tx, setting } from '../db.js';
-import { bad, conflict, notFound, forbidden, ref, money, addMinutes, normPhone, networkOf, localTime, localDate } from '../util.js';
+import { bad, conflict, notFound, forbidden, ref, uniqueRef, money, addMinutes, normPhone, networkOf, localTime, localDate } from '../util.js';
 import { config } from '../config.js';
 import { layoutForTrip } from './seats.js';
 import { priceLeg, findPromo, refundQuote, operatorTerms } from './pricing.js';
@@ -59,7 +59,7 @@ export function createBookings(db, { legs, contact, promo_code, payment_method, 
   const email = contact.email?.trim() || null;
   if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw bad('Enter a valid email address or leave it blank.');
 
-  const groupRef = ref('G', 8);
+  const groupRef = uniqueRef(db, 'bookings', 'group_ref', 'G', 8);
   const now = new Date();
   const reserveMin = Number(setting(db, 'reserve_minutes'));
   const language = langFor(db, { lang, user, phone });
@@ -92,7 +92,7 @@ export function createBookings(db, { legs, contact, promo_code, payment_method, 
       const ptsDisc = pointsValue(db, ptsUsed);
       pointsLeft -= ptsUsed;
       const total = money(price.total - ptsDisc);
-      const bookingRef = ref('MT', 6);
+      const bookingRef = uniqueRef(db, 'bookings', 'ref', 'MT', 6);
       const b = db.prepare(`INSERT INTO bookings (ref, group_ref, user_id, created_by, trip_id, operator_id, channel, status, from_stop_id, to_stop_id,
           contact_name, contact_phone, contact_email, fare_total, discount, booking_fee, total, commission, promo_code, payment_method, expires_at, confirmed_at,
           luggage_fee, points_used, points_discount, lang, source)
@@ -261,14 +261,14 @@ export function rescheduleBooking(db, booking, { trip_id, hold_token, seats, use
   const leftover = money(Math.max(0, credit - applied - (booking.points_discount || 0)));
   const total = money(newCost - applied + terms.rescheduleFee);
   const now = new Date();
-  const newRef = ref('MT', 6);
+  const newRef = uniqueRef(db, 'bookings', 'ref', 'MT', 6);
   const result = tx(db, () => {
     const heldNos = new Set(db.prepare('SELECT seat_no FROM seat_holds WHERE trip_id = ? AND hold_token = ? AND expires_at > ?').all(newTrip.id, hold_token || '', now.toISOString()).map(h => h.seat_no));
     if (seats.some(s => !heldNos.has(String(s)))) throw conflict('Your seat selection expired. Pick your seats again.', 'hold_expired');
     const status = total > 0 ? 'pending_payment' : 'confirmed';
     const b = db.prepare(`INSERT INTO bookings (ref, group_ref, user_id, created_by, trip_id, operator_id, channel, status, from_stop_id, to_stop_id, contact_name, contact_phone, contact_email,
         fare_total, discount, booking_fee, total, commission, payment_method, expires_at, rescheduled_from, confirmed_at, luggage_fee, lang)
-      VALUES (?,?,?,?,?,?,'web',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).get(newRef, ref('G', 8), booking.user_id, user?.id ?? null, newTrip.id, newTrip.operator_id, status,
+      VALUES (?,?,?,?,?,?,'web',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).get(newRef, uniqueRef(db, 'bookings', 'group_ref', 'G', 8), booking.user_id, user?.id ?? null, newTrip.id, newTrip.operator_id, status,
       from.id, to.id, booking.contact_name, booking.contact_phone, booking.contact_email, price.fare_total, applied, terms.rescheduleFee, total,
       money((price.fare_total) * terms.commissionPct / 100), booking.payment_method, status === 'confirmed' ? null : addMinutes(now, Number(setting(db, 'hold_minutes'))).toISOString(),
       booking.id, status === 'confirmed' ? now.toISOString() : null, price.luggage_fee, booking.lang || 'en');
