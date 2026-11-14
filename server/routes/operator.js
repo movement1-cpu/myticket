@@ -4,7 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { tx, setting } from '../db.js';
 import { config } from '../config.js';
-import { requireRole, requireApprovedOperator, hashPassword } from '../auth.js';
+import { requireRole, requireApprovedOperator, hashPassword, revokeAllSessions } from '../auth.js';
 import { bad, notFound, conflict, forbidden, required, normPhone, isDate, isTime, ref, uniqueRef, money, localDate, localTime, addDays } from '../util.js';
 import { ensureTrips, routeStops } from '../services/trips.js';
 import { createBookings, settleAtCounter, cancelBooking, groupBookings } from '../services/bookings.js';
@@ -188,13 +188,21 @@ export default function operatorRoutes(db) {
     });
     res.status(201).json(s);
   });
+  /** Lost or stolen phone: end every session of this staff member. The field app erases its data when it next connects. */
+  r.post('/operator/staff/:id/sign-out', ...owner, (req, res) => {
+    const st = mine('staff', req.params.id, req.operatorId);
+    if (!st.user_id) throw bad('This person has no login.');
+    const n = revokeAllSessions(db, st.user_id);
+    audit(req, 'staff_signed_out', 'user', st.user_id, `${n} sessions`);
+    res.json({ ok: true, signed_out: n });
+  });
   r.put('/operator/staff/:id', ...owner, (req, res) => {
     const s = mine('staff', req.params.id, req.operatorId);
     const active = req.body.active === undefined ? s.active : req.body.active ? 1 : 0;
     if (req.body.licence_expiry && !isDate(req.body.licence_expiry)) throw bad('Licence expiry must be a date.');
     db.prepare('UPDATE staff SET name = ?, licence_no = ?, active = ?, licence_expiry = ? WHERE id = ?')
       .run(req.body.name || s.name, req.body.licence_no ?? s.licence_no, active, req.body.licence_expiry === undefined ? s.licence_expiry : (req.body.licence_expiry || null), s.id);
-    if (s.user_id) db.prepare('UPDATE users SET active = ? WHERE id = ?').run(active, s.user_id);
+    if (s.user_id) { db.prepare('UPDATE users SET active = ? WHERE id = ?').run(active, s.user_id); if (!active) revokeAllSessions(db, s.user_id); }
     res.json({ ok: true });
   });
 

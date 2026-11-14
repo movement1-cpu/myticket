@@ -1,6 +1,6 @@
 // Field app service worker: caches the app shell so it opens without signal. API calls are never cached.
-const CACHE = 'mt-agent-v2';
-const SHELL = ['/agent.html', '/css/app.css', '/js/agent.js', '/js/core.js', '/vendor/jsqr/jsQR.js', '/icon.svg', '/agent.webmanifest'];
+const CACHE = 'mt-agent-v3';
+const SHELL = ['/agent.html', '/css/app.css', '/js/agent.js', '/js/core.js', '/js/vault.js', '/vendor/jsqr/jsQR.js', '/icon.svg', '/agent.webmanifest'];
 
 self.addEventListener('install', e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())));
 self.addEventListener('activate', e => e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())));

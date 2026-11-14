@@ -1,24 +1,55 @@
 // Conductor / station agent app. Works offline: the trip manifest (with each booking's QR payload)
 // is stored on the phone, scans are checked locally and queued, and the queue syncs when back online.
 import { $, $$, html, raw, api, auth, toast, busy, formData, time } from './core.js';
+import { vault } from './vault.js';
 
 const app = $('#app');
+// Sensitive data (trips, manifests, scan queue) lives in the encrypted vault; only the list/bus view choice is plain.
 const local = {
-  get(k, d = null) { try { return JSON.parse(localStorage.getItem('mt.agent.' + k)) ?? d; } catch { return d; } },
-  set(k, v) { try { localStorage.setItem('mt.agent.' + k, JSON.stringify(v)); } catch { toast('Phone storage is full. Sync and clear old trips.', true); } },
+  get(k, d = null) { if (k === 'view') { try { return JSON.parse(localStorage.getItem('mt.agent.view')) ?? d; } catch { return d; } } return vault.get(k, d); },
+  set(k, v) { if (k === 'view') { try { localStorage.setItem('mt.agent.view', JSON.stringify(v)); } catch {} return; } vault.set(k, v); },
 };
 const queue = { all: () => local.get('queue', []), push: c => local.set('queue', [...queue.all(), c]), set: q => local.set('queue', q) };
-let stopCamera = null, gpsWatch = null, gpsLast = 0;
+let stopCamera = null, gpsWatch = null, gpsLast = 0, idleTimer = null, hiddenAt = 0;
+const IDLE_MS = 5 * 60 * 1000, BACKGROUND_MS = 2 * 60 * 1000;
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
-const setNet = () => { const n = $('#net'); const q = queue.all().length; n.textContent = navigator.onLine ? (q ? `Online · ${q} to sync` : 'Online') : `Offline${q ? ` · ${q} queued` : ''}`; n.className = 'net' + (navigator.onLine ? '' : ' off'); };
+const setNet = () => { const n = $('#net'); const q = vault.unlocked() ? queue.all().length : 0; n.textContent = navigator.onLine ? (q ? `Online · ${q} to sync` : 'Online') : `Offline${q ? ` · ${q} queued` : ''}`; n.className = 'net' + (navigator.onLine ? '' : ' off'); };
 addEventListener('online', () => { setNet(); sync(); });
 addEventListener('offline', setNet);
-setInterval(() => navigator.onLine && queue.all().length && sync(), 30000);
+setInterval(() => navigator.onLine && vault.unlocked() && queue.all().length && sync(), 30000);
 
-$('#logout').addEventListener('click', async () => { if (queue.all().length) return toast('Sync your scans before signing out.', true); await api('/auth/logout', { method: 'POST' }).catch(() => {}); auth.clear(); start(); });
+/* ---------- lock ---------- */
+function lockNow(reason) {
+  if (!vault.unlocked()) return;
+  stopCamera?.(); stopCamera = null;
+  vault.lock();
+  if (reason) toast(reason);
+  start();
+}
+const bump = () => { clearTimeout(idleTimer); if (vault.unlocked()) idleTimer = setTimeout(() => lockNow('Locked after 5 minutes without use.'), IDLE_MS); };
+['pointerdown', 'keydown'].forEach(ev => addEventListener(ev, bump, { passive: true }));
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) hiddenAt = Date.now();
+  else if (hiddenAt && Date.now() - hiddenAt > BACKGROUND_MS) lockNow('Locked while the app was in the background.');
+});
+
+/** The server says this session is gone (signed out remotely, password reset, lost phone): erase the phone's copy. */
+function revoked() {
+  vault.wipe(); auth.clear();
+  toast('This device was signed out. Trip data on the phone was erased.', true);
+  start();
+}
+const guard = e => { if (e?.status === 401) { revoked(); return true; } return false; };
+
+$('#logout').addEventListener('click', async () => {
+  if (vault.unlocked() && queue.all().length) return toast('Sync your scans before signing out.', true);
+  await api('/auth/logout', { method: 'POST' }).catch(() => {});
+  vault.wipe(); auth.clear(); start();
+});
 
 async function sync() {
+  if (!vault.unlocked()) return setNet();
   const q = queue.all();
   if (!q.length || !navigator.onLine) return setNet();
   try {
@@ -28,7 +59,7 @@ async function sync() {
     const conflicts = r.results.filter(x => x.result !== 'boarded');
     if (conflicts.length) toast(`${conflicts.length} synced scan${conflicts.length > 1 ? 's were' : ' was'} rejected by the server: ${conflicts[0].message || conflicts[0].result}`, true);
     else toast(`Synced ${r.results.length} scan${r.results.length > 1 ? 's' : ''}.`);
-  } catch (e) { if (e.status) toast(e.message, true); }
+  } catch (e) { if (!guard(e) && e.status) toast(e.message, true); }
   setNet();
 }
 
@@ -38,7 +69,47 @@ function start() {
   const u = auth.user;
   $('#logout').hidden = !u;
   if (!u || !['conductor', 'clerk', 'operator'].includes(u.role)) return login();
+  if (!vault.exists() || vault.ownerId() !== u.id) return pinSetup(u);
+  if (!vault.unlocked()) return unlockScreen(u);
+  bump();
   tripsView();
+}
+
+const weakPin = p => !/^\d{4,6}$/.test(p) || /^(\d)\1+$/.test(p) || '0123456789'.includes(p) || '9876543210'.includes(p);
+function pinSetup(u) {
+  app.innerHTML = html`<div class="page"><h1>Choose an app PIN</h1>
+    <p class="muted" style="margin:0">Trip lists and passenger details on this phone are locked with this PIN. Use 4–6 digits that are not easy to guess. Five wrong tries erase the phone's copy.</p>
+    <form class="card" id="pf"><label class="field"><span>PIN</span><input name="pin" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password" required></label>
+      <label class="field"><span>Same PIN again</span><input name="pin2" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password" required></label><button class="btn">Save PIN</button></form></div>`;
+  const f = $('#pf');
+  f.addEventListener('submit', e => { e.preventDefault(); busy(f.querySelector('button'), async () => {
+    const { pin, pin2 } = formData(f);
+    if (weakPin(pin)) throw new Error('Use 4–6 digits, not all the same and not in a row (like 1234).');
+    if (pin !== pin2) throw new Error('The two PINs are different.');
+    await vault.create(pin, u.id);
+    toast('PIN saved. The app locks itself when you are not using it.');
+    start();
+  }); });
+  f.pin.focus();
+}
+
+function unlockScreen(u) {
+  app.innerHTML = html`<div class="page"><h1>Unlock</h1><p class="muted" style="margin:0">${u.name.split(' (')[0]}, enter your app PIN.</p>
+    <form class="card" id="uf"><label class="field"><span>PIN</span><input name="pin" type="password" inputmode="numeric" maxlength="6" autocomplete="off" required></label>
+      <button class="btn">Unlock</button><button type="button" class="btn ghost" id="forgot">I forgot my PIN</button></form></div>`;
+  const f = $('#uf');
+  f.addEventListener('submit', e => { e.preventDefault(); busy(f.querySelector('.btn'), async () => {
+    const r = await vault.unlock(f.pin.value);
+    if (r.ok) return start();
+    if (r.wiped) { await api('/auth/logout', { method: 'POST' }).catch(() => {}); auth.clear(); toast('Too many wrong PINs. Trip data on this phone was erased. Sign in again.', true); return start(); }
+    f.pin.value = '';
+    throw new Error(`Wrong PIN. ${r.left} ${r.left === 1 ? 'try' : 'tries'} left before the phone's copy is erased.`);
+  }); });
+  $('#forgot').addEventListener('click', async () => {
+    if (!window.confirm?.('This erases the trips and any scans not yet synced on this phone, and signs you out. Continue?')) return;
+    vault.wipe(); await api('/auth/logout', { method: 'POST' }).catch(() => {}); auth.clear(); start();
+  });
+  f.pin.focus();
 }
 
 function login() {
@@ -66,9 +137,9 @@ function login() {
 
 async function tripsView() {
   let list = local.get('trips');
-  try { list = await api('/agent/trips'); local.set('trips', list); } catch (e) { if (e.status) return toast(e.message, true); }
+  try { list = await api('/agent/trips'); local.set('trips', list); } catch (e) { if (guard(e)) return; if (e.status) return toast(e.message, true); }
   list = list || [];
-  const saved = new Set(Object.keys(localStorage).filter(k => k.startsWith('mt.agent.manifest.')).map(k => Number(k.split('.').pop())));
+  const saved = new Set(vault.keys().filter(k => k.startsWith('manifest.')).map(k => Number(k.split('.').pop())));
   app.innerHTML = html`<div class="page"><div class="head"><h1>Today's trips</h1><button class="btn ghost sm" id="sync">Sync now</button></div>
     ${list.length ? list.map(t => html`<button class="card" data-trip="${t.id}" style="text-align:left;cursor:pointer;font:inherit;color:inherit${t.mine ? ';border-color:var(--brand);border-width:2px' : ''}">
       <div class="row" style="justify-content:space-between"><b style="font-size:18px">${t.depart_local} · ${t.route_name}</b><span class="pill ${t.status === 'departed' ? 'ok' : t.status === 'delayed' ? 'warn' : 'idle'}">${t.status}</span></div>
@@ -81,7 +152,7 @@ async function tripsView() {
 async function tripView(id) {
   let m = local.get('manifest.' + id);
   try { m = await api(`/agent/trips/${id}/manifest`); local.set('manifest.' + id, m); }
-  catch (e) { if (e.status) return toast(e.message, true); if (!m) return toast('You are offline and this trip was not saved on the phone.', true); }
+  catch (e) { if (guard(e)) return; if (e.status) return toast(e.message, true); if (!m) return toast('You are offline and this trip was not saved on the phone.', true); }
   const boardedLocal = new Set(queue.all().filter(c => c.trip_id === id).map(c => c.ref));
   const isBoarded = s => s.boarded_at || boardedLocal.has(s.ref);
   let view = local.get('view', 'bus');
@@ -146,9 +217,9 @@ async function tripView(id) {
       if (fresh.size) toast(`New booking: seat ${[...fresh].join(', ')}.`);
       m = next; local.set('manifest.' + id, m);
       drawSeats();
-    } catch {}
+    } catch (e) { guard(e); }
   }
-  const timer = setInterval(refresh, 15000);
+  const timer = setInterval(() => vault.unlocked() ? refresh() : clearInterval(timer), 15000);
   const leave = () => { clearInterval(timer); stopCamera?.(); stopCamera = null; };
 
   $('#back').addEventListener('click', () => { leave(); tripsView(); });

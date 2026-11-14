@@ -42,7 +42,7 @@ export async function api(path, { method = 'GET', body, headers = {} } = {}) {
   });
   const ct = res.headers.get('content-type') || '';
   const data = ct.includes('json') ? await res.json() : await res.blob();
-  if (res.status === 401 && auth.user && !path.startsWith('/auth/') && path !== '/me') {
+  if (res.status === 401 && auth.user && !path.startsWith('/auth/') && path !== '/me' && !location.pathname.startsWith('/agent')) {
     if (data?.code === 'mfa_required') location.hash = '#/login';
     else { auth.clear(); sessionStorage.setItem('mt.next', location.hash); location.hash = '#/login'; }
   }
@@ -103,12 +103,15 @@ export function modal(content, { wide = false } = {}) {
   ov.querySelector('input, select, textarea, button')?.focus();
   return { el: ov.firstElementChild, close };
 }
+// Errors already shown to the person (toast) are not "unhandled".
+addEventListener('unhandledrejection', e => { if (e.reason?.shown) e.preventDefault(); });
+
 /** Run an async action from a button: disable it, show errors as a toast. */
 export async function busy(btn, fn) {
   const label = btn?.innerHTML;
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>'; }
   try { return await fn(); }
-  catch (e) { toast(e.message, true); throw e; }
+  catch (e) { toast(e.message, true); try { e.shown = true; } catch {} throw e; }
   finally { if (btn && btn.isConnected) { btn.disabled = false; btn.innerHTML = label; } }
 }
 export const formData = form => Object.fromEntries(new FormData(form).entries());

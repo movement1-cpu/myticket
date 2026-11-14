@@ -873,3 +873,15 @@ test('cash shifts: no shift no cash; ledger is append-only; close compares count
   await api('POST', '/api/counter/shift/open', { token: fresh, body: { opening_float: 200 } });
   tokens.clerk = fresh;
 });
+
+/* ---------------- Security step 6: field app (server side) ---------------- */
+test('owner can sign a staff member out of every device (lost phone); deactivating does too', async () => {
+  const cond = await login('0970000004');
+  const staff = (await api('GET', '/api/operator/staff', { token: tokens.operator })).body.find(s => s.login_phone === '260970000004');
+  const r = await api('POST', `/api/operator/staff/${staff.id}/sign-out`, { token: tokens.operator });
+  assert.ok(r.body.signed_out >= 1);
+  assert.equal((await api('GET', '/api/agent/trips', { token: cond })).status, 401);
+  assert.equal((await api('POST', `/api/operator/staff/${staff.id}/sign-out`, { token: tokens.clerk })).status, 403, 'only the owner');
+  tokens.conductor = await login('0970000004');
+  await api('POST', '/api/counter/shift/open', { token: tokens.conductor, body: { opening_float: 0 } });
+});

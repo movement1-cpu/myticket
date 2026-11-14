@@ -333,7 +333,7 @@ async function staffView(main) {
   main.innerHTML = html`<div class="head"><h1>Drivers & staff</h1><button class="btn" id="add">Add person</button></div>
     <div class="tablewrap"><table><thead><tr><th>Name</th><th>Role</th><th>Phone</th><th>Licence</th><th>Login</th><th></th></tr></thead><tbody>
       ${list.map(s => html`<tr style="${s.active ? '' : 'opacity:.55'}"><td><b>${s.name}</b></td><td>${s.role}</td><td class="num">${phoneFmt(s.phone)}</td><td class="mono">${s.licence_no || ''}</td><td class="small">${s.login_phone ? 'Field app / counter' : '—'}</td>
-        <td><button class="btn ghost sm" data-toggle="${s.id}" data-active="${s.active}">${s.active ? 'Deactivate' : 'Reactivate'}</button></td></tr>`)}
+        <td><div class="row" style="gap:4px;flex-wrap:nowrap">${s.login_phone && s.active ? html`<button class="btn danger sm" data-signout="${s.id}" title="Lost or stolen phone">Sign out all devices</button>` : ''}<button class="btn ghost sm" data-toggle="${s.id}" data-active="${s.active}">${s.active ? 'Deactivate' : 'Reactivate'}</button></div></td></tr>`)}
     </tbody></table></div>`;
   $('#add', main).addEventListener('click', () => {
     const m = modal(html`<h2>Add staff</h2><form id="sf" class="page" style="gap:10px"><div class="grid2">
@@ -347,7 +347,10 @@ async function staffView(main) {
     f.role.addEventListener('change', sync); sync();
     f.addEventListener('submit', e => { e.preventDefault(); busy(f.querySelector('.btn:not(.ghost)'), async () => { await api('/operator/staff', { method: 'POST', body: formData(f) }); m.close(); toast('Added.'); staffView(main); }); });
   });
-  main.addEventListener('click', e => { const b = e.target.closest('[data-toggle]'); if (b) busy(b, async () => { await api('/operator/staff/' + b.dataset.toggle, { method: 'PUT', body: { active: b.dataset.active !== '1' } }); staffView(main); }); });
+  main.addEventListener('click', e => {
+    const b = e.target.closest('[data-toggle]'); if (b) busy(b, async () => { await api('/operator/staff/' + b.dataset.toggle, { method: 'PUT', body: { active: b.dataset.active !== '1' } }); staffView(main); });
+    const o = e.target.closest('[data-signout]'); if (o) busy(o, async () => { const r = await api(`/operator/staff/${o.dataset.signout}/sign-out`, { method: 'POST' }); toast(`Signed out ${r.signed_out} session${r.signed_out === 1 ? '' : 's'}. Their phone erases its trip data when it next connects.`); });
+  });
 }
 
 /* ---------- maintenance & compliance ---------- */
