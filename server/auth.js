@@ -16,7 +16,7 @@ export function verifyPassword(pw, stored) {
 }
 
 export function issueToken(user) {
-  const payload = Buffer.from(JSON.stringify({ uid: user.id, role: user.role, exp: Date.now() + TOKEN_DAYS * 864e5 })).toString('base64url');
+  const payload = Buffer.from(JSON.stringify({ uid: user.id, role: user.role, iat: Date.now(), exp: Date.now() + TOKEN_DAYS * 864e5 })).toString('base64url');
   return `${payload}.${sign('tok.' + payload)}`;
 }
 export function readToken(token) {
@@ -30,7 +30,7 @@ export function readToken(token) {
 
 /** Loads req.user from the Bearer token, if any. Never rejects on its own. */
 export function authenticate(db) {
-  const getUser = db.prepare(`SELECT u.id, u.role, u.name, u.phone, u.email, u.operator_id, u.active, u.lang,
+  const getUser = db.prepare(`SELECT u.id, u.role, u.name, u.phone, u.email, u.operator_id, u.active, u.lang, u.phone_verified, u.password_changed_at,
       o.status AS operator_status, o.name AS operator_name
     FROM users u LEFT JOIN operators o ON o.id = u.operator_id WHERE u.id = ?`);
   return (req, _res, next) => {
@@ -38,7 +38,9 @@ export function authenticate(db) {
     const data = h.startsWith('Bearer ') && readToken(h.slice(7));
     if (data) {
       const u = getUser.get(data.uid);
-      if (u && u.active) req.user = u;
+      // A password change or reset signs out every earlier session.
+      const stale = u?.password_changed_at && (data.iat || 0) < new Date(u.password_changed_at).getTime();
+      if (u && u.active && !stale) req.user = u;
     }
     next();
   };

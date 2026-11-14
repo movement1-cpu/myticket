@@ -438,6 +438,7 @@ export async function myTrips(app) {
   const up = list.filter(b => b.upcoming), past = list.filter(b => !b.upcoming);
   app.innerHTML = html`<div class="page">
     <div class="head"><h1>${t('m.title')}</h1><a class="btn" href="#/">${t('m.book')}</a></div>
+    ${auth.user.phone_verified ? '' : html`<a class="notice" href="#/verify" style="color:inherit;display:block">Confirm your phone number to see earlier bookings made with it and to use loyalty points. <b>Confirm now</b></a>`}
     ${pts ? html`<details class="card"><summary><b>${t('m.points')}: ${pts.balance}</b> <span class="small muted">· ${t('m.points.d', { b: pts.balance, v: kwacha(pts.balance * pts.point_value), k: pts.points_per_kwacha ? Math.round(1 / pts.points_per_kwacha) : '—' })}</span></summary>
       ${pts.history.length ? html`<div class="tablewrap"><table><tbody>${pts.history.map(h => html`<tr><td class="small">${h.created_at.slice(0, 10)}</td><td>${h.note || h.kind}</td><td class="r num" style="color:${h.points < 0 ? 'var(--bad)' : 'var(--ok)'}">${h.points > 0 ? '+' : ''}${h.points}</td></tr>`)}</tbody></table></div>` : ''}</details>` : ''}
     <h2>${t('m.upcoming')}</h2>${up.length ? up.map(ticketCard) : raw('<div class="empty">No upcoming trips.</div>')}

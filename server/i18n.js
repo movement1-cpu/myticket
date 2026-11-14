@@ -5,6 +5,10 @@ export const LANGS = { en: 'English', bem: 'Ichibemba', nya: 'Chinyanja', toi: '
 
 const M = {
   en: {
+    'otp.verify': 'MyTicket code: {code}. It confirms this is your phone. It expires in 5 minutes. Never share it with anyone, including MyTicket staff.',
+    'otp.reset': 'MyTicket password reset code: {code}. Expires in 5 minutes. Never share it with anyone, including MyTicket staff.',
+    'otp.login': 'MyTicket sign-in code: {code}. Expires in 5 minutes. Never share it with anyone.',
+    'sms.password_changed': 'MyTicket: Your password was just changed and all devices were signed out. If this was not you, reset your password now and contact support.',
     'sms.reminder': 'MyTicket reminder: bus {plate} {from} to {to} leaves {date} at {time} from {terminal}. Seat {seats}, booking {ref}. Be there 30 minutes early with your ID.',
     'sms.waitlist_joined': 'MyTicket: You are number {n} on the waitlist for {seats} seat(s). We will SMS you a link as soon as seats free up.',
     'sms.waitlist_offer': 'MyTicket: Seats {seats} are now held for you until {time}. Pay here to keep them: {url}',
@@ -44,6 +48,10 @@ const M = {
     'sms.help': 'MyTicket SMS: STATUS <ref> for your bus, TICKETS for your bookings. To book, dial the USSD code or visit our website.',
   },
   bem: {
+    'otp.verify': 'MyTicket code: {code}. Ilangilila ukuti iyi foni yenu. Ikapwa mu mamineti 5. Mwilaishibisha nangu umo.',
+    'otp.reset': 'MyTicket code ya kwalula password: {code}. Ikapwa mu mamineti 5. Mwilaishibisha nangu umo.',
+    'otp.login': 'MyTicket code ya kwingila: {code}. Ikapwa mu mamineti 5. Mwilaishibisha nangu umo.',
+    'sms.password_changed': 'MyTicket: Password yenu yaalulwa kabili ifipangilwa fyonse fyafumishiwa. Nga te imwe, alulenipo nomba.',
     'sms.reminder': 'MyTicket: Mwibukisheni: basi {plate} {from} ukuya ku {to} ikafuma {date} {time} pa {terminal}. Icipuna {seats}, {ref}. Fikeni mamineti 30 ilyo ishilafuma ne citupa cenu.',
     'sms.waitlist_joined': 'MyTicket: Muli nambala {n} pa lisitu lya kulolela ifipuna {seats}. Tukamutumina link ilyo ifipuna fyakakuka.',
     'sms.waitlist_offer': 'MyTicket: Ifipuna {seats} fyamusungilwa ukufika {time}. Lipileni pano: {url}',
@@ -82,6 +90,10 @@ const M = {
     'status.scheduled': 'pa nshita', 'status.boarding': 'ilepoka abantu', 'status.departed': 'ili mu musebo', 'status.delayed': 'ilechelwa mamineti {min}', 'status.arrived': 'yafika', 'status.cancelled': 'YAFUMISHIWAPO',
   },
   nya: {
+    'otp.verify': 'MyTicket code: {code}. Ikutsimikiza kuti foni iyi ndi yanu. Itha mphindi 5. Musauze aliyense.',
+    'otp.reset': 'MyTicket code yosintha password: {code}. Itha mphindi 5. Musauze aliyense.',
+    'otp.login': 'MyTicket code yolowera: {code}. Itha mphindi 5. Musauze aliyense.',
+    'sms.password_changed': 'MyTicket: Password yanu yasinthidwa ndipo zipangizo zonse zatulutsidwa. Ngati si inu, sinthani password tsopano.',
     'sms.reminder': 'MyTicket: Chikumbutso: basi {plate} {from} kupita ku {to} inyamuka {date} {time} pa {terminal}. Mpando {seats}, {ref}. Fikani mphindi 30 isananyamuke ndi chiphaso chanu.',
     'sms.waitlist_joined': 'MyTicket: Ndinu nambala {n} pa mndandanda wodikira mipando {seats}. Tidzakutumizirani link mipando ikangopezeka.',
     'sms.waitlist_offer': 'MyTicket: Mipando {seats} yakusungirani mpaka {time}. Lipirani apa kuti muisunge: {url}',
@@ -120,6 +132,10 @@ const M = {
     'status.scheduled': 'pa nthawi', 'status.boarding': 'ikukweza anthu', 'status.departed': 'ili pa msewu', 'status.delayed': 'ichedwa mphindi {min}', 'status.arrived': 'yafika', 'status.cancelled': 'YALETSEDWA',
   },
   toi: {
+    'otp.verify': 'MyTicket code: {code}. Itondezya kuti foni eeyi njanu. Iyoomana mumaminiti 5. Mutaambili muntu.',
+    'otp.reset': 'MyTicket code yakucinca password: {code}. Iyoomana mumaminiti 5. Mutaambili muntu.',
+    'otp.login': 'MyTicket code yakunjila: {code}. Iyoomana mumaminiti 5. Mutaambili muntu.',
+    'sms.password_changed': 'MyTicket: Password yanu yacincwa alimwi zyoonse zyagwisyigwa. Kuti tensi ndinywe, amucince password lino.',
     'sms.reminder': 'MyTicket: Kuyeezyegwa: bbaasi {plate} {from} kuya ku {to} liyooinka {date} {time} ku {terminal}. Cuuno {seats}, {ref}. Amusike maminiti 30 kalitanainka acitupa canu.',
     'sms.waitlist_joined': 'MyTicket: Muli namba {n} amulongo wakulindila zyuuno {seats}. Tuyoomutumina link zyuuno zyaakujanika.',
     'sms.waitlist_offer': 'MyTicket: Zyuuno {seats} zyamubambilwa kusikila {time}. Amulipe aawa: {url}',

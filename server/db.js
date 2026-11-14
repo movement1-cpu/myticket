@@ -326,6 +326,16 @@ CREATE TABLE IF NOT EXISTS waitlist (
 );
 CREATE INDEX IF NOT EXISTS ix_waitlist_trip ON waitlist(trip_id, status);
 
+-- Security: persistent rate limits, one-time SMS codes.
+CREATE TABLE IF NOT EXISTS rate_limits (key TEXT PRIMARY KEY, window_start INTEGER NOT NULL, count INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS otp_codes (
+  id INTEGER PRIMARY KEY,
+  phone TEXT NOT NULL, purpose TEXT NOT NULL, code_hash TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0, expires_at TEXT NOT NULL, used_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS ix_otp_phone ON otp_codes(phone, purpose);
+
 -- Language preference for phone numbers without an account (USSD / SMS users).
 CREATE TABLE IF NOT EXISTS phone_prefs (phone TEXT PRIMARY KEY, lang TEXT NOT NULL DEFAULT 'en');
 
@@ -386,6 +396,9 @@ function migrate(db) {
   // v4: departure reminders, demand-based pricing
   add('bookings', 'reminded_at', 'TEXT');
   add('operators', 'dynamic_pricing', 'TEXT');
+  // v5 security
+  add('users', 'phone_verified', 'INTEGER NOT NULL DEFAULT 0');
+  add('users', 'password_changed_at', 'TEXT');
 }
 
 /** Run fn inside a write transaction. BEGIN IMMEDIATE serialises writers, so check-then-insert is safe. */

@@ -42,6 +42,8 @@ const routes = [
   [/^#\/login$/, (_m, v) => loginPage(v)],
   [/^#\/register$/, (_m, v) => registerPage(v)],
   [/^#\/join$/, (_m, v) => joinPage(v)],
+  [/^#\/forgot$/, (_m, v) => forgotPage(v)],
+  [/^#\/verify$/, (_m, v) => verifyPage(v)],
   [/^#\/op\/(\w+)(?:\/(.*))?$/, (m, v) => operator.render(v, m[1], m[2])],
   [/^#\/admin\/(\w+)$/, (m, v) => admin.render(v, m[1])],
 ];
@@ -89,7 +91,7 @@ function loginPage(app) {
       <label class="field"><span>Mobile number</span><input name="phone" inputmode="tel" autocomplete="tel" placeholder="0971 234 567" required></label>
       <label class="field"><span>Password</span><input name="password" type="password" autocomplete="current-password" required></label>
       <button class="btn">Sign in</button>
-      <p class="small muted" style="margin:0">New here? <a href="#/register">Create a passenger account</a> · Bus company? <a href="#/join">Register your company</a></p>
+      <p class="small muted" style="margin:0"><a href="#/forgot">Forgot your password?</a> · New here? <a href="#/register">Create a passenger account</a> · Bus company? <a href="#/join">Register your company</a></p>
     </form>
     <details class="card flat"><summary class="small">Demo accounts (development data, password <span class="mono">demo1234</span>)</summary>
       <div class="small" style="display:grid;gap:4px">${raw([
@@ -115,7 +117,52 @@ function registerPage(app) {
     </form>
   </div>`;
   const f = $('#f', app);
-  f.addEventListener('submit', e => { e.preventDefault(); busy(f.querySelector('button'), async () => afterLogin(await api('/auth/register', { method: 'POST', body: formData(f) }))); });
+  f.addEventListener('submit', e => { e.preventDefault(); busy(f.querySelector('button'), async () => {
+    const r = await api('/auth/register', { method: 'POST', body: { ...formData(f), lang: getLang() } });
+    auth.set(r.token, r.user);
+    if (r.dev_code) sessionStorage.setItem('mt.devcode', r.dev_code);
+    location.hash = '#/verify';
+  }); });
+}
+
+/** Confirm the phone number with the SMS code. Earlier guest bookings on this number are added afterwards. */
+function verifyPage(app) {
+  const u = auth.user;
+  if (!u) { location.hash = '#/login'; return; }
+  const dev = sessionStorage.getItem('mt.devcode'); sessionStorage.removeItem('mt.devcode');
+  app.innerHTML = html`<div class="page" style="max-width:420px;margin:0 auto"><h1>Confirm your phone</h1>
+    <p class="muted" style="margin:0">We sent a 6-digit code by SMS to 0${u.phone.slice(3)}. It expires in 5 minutes.</p>
+    ${dev ? html`<div class="notice small">Development mode (no real SMS): the code is <b class="mono">${dev}</b></div>` : ''}
+    <form class="card" id="f"><label class="field"><span>Code</span><input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></label>
+      <button class="btn">Confirm</button><button type="button" class="btn ghost" id="resend">Send a new code</button><a href="${PORTAL_HOME[u.role]}" class="small">Do this later</a></form></div>`;
+  const f = $('#f', app);
+  f.addEventListener('submit', e => { e.preventDefault(); busy(f.querySelector('.btn'), async () => {
+    const r = await api('/auth/verify-phone', { method: 'POST', body: formData(f) });
+    auth.set(auth.token, { ...u, phone_verified: 1 });
+    toast(r.linked_bookings ? `Phone confirmed. ${r.linked_bookings} earlier booking(s) added to My trips.` : 'Phone confirmed.');
+    location.hash = PORTAL_HOME[u.role];
+  }); });
+  $('#resend', app).addEventListener('click', e => busy(e.target, async () => { const r = await api('/auth/otp', { method: 'POST', body: { purpose: 'verify' } }); toast(r.dev_code ? `New code (development): ${r.dev_code}` : 'New code sent.'); }));
+}
+
+/** Password reset by SMS code. */
+function forgotPage(app) {
+  app.innerHTML = html`<div class="page" style="max-width:420px;margin:0 auto"><h1>Reset your password</h1>
+    <form class="card" id="a"><label class="field"><span>Mobile number</span><input name="phone" inputmode="tel" autocomplete="tel" required></label><button class="btn">Send me a code</button></form>
+    <form class="card" id="b" hidden><p class="small muted" style="margin:0" id="msg"></p>
+      <label class="field"><span>Code from the SMS</span><input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></label>
+      <label class="field"><span>New password (8+ characters)</span><input name="password" type="password" minlength="8" autocomplete="new-password" required></label>
+      <button class="btn">Set new password</button></form></div>`;
+  const a = $('#a', app), b = $('#b', app);
+  a.addEventListener('submit', e => { e.preventDefault(); busy(a.querySelector('button'), async () => {
+    const r = await api('/auth/otp', { method: 'POST', body: { purpose: 'reset', phone: a.phone.value } });
+    b.hidden = false; $('#msg', app).textContent = r.message + (r.dev_code ? ` (Development code: ${r.dev_code})` : '');
+    b.code.focus();
+  }); });
+  b.addEventListener('submit', e => { e.preventDefault(); busy(b.querySelector('button'), async () => {
+    await api('/auth/password/reset', { method: 'POST', body: { phone: a.phone.value, ...formData(b) } });
+    auth.clear(); toast('Password changed. Every device was signed out. Sign in with the new password.'); location.hash = '#/login';
+  }); });
 }
 
 function joinPage(app) {
@@ -136,5 +183,10 @@ function joinPage(app) {
     </form>
   </div>`;
   const f = $('#f', app);
-  f.addEventListener('submit', e => { e.preventDefault(); busy(f.querySelector('button'), async () => { afterLogin(await api('/auth/register-operator', { method: 'POST', body: formData(f) })); location.hash = '#/op/company'; }); });
+  f.addEventListener('submit', e => { e.preventDefault(); busy(f.querySelector('button'), async () => {
+    const r = await api('/auth/register-operator', { method: 'POST', body: formData(f) });
+    auth.set(r.token, r.user);
+    if (r.dev_code) sessionStorage.setItem('mt.devcode', r.dev_code);
+    location.hash = '#/verify';
+  }); });
 }

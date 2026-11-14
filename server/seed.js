@@ -233,6 +233,7 @@ export function seedDemo(db) {
 
     // Loyalty: the demo passenger has points to spend.
     db.prepare("INSERT INTO loyalty_ledger (user_id, points, kind, note) VALUES (?, 250, 'adjust', 'Welcome bonus')").run(nat);
+    db.prepare('UPDATE users SET phone_verified = 1').run(); // demo accounts count as verified
   });
 }
 

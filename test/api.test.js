@@ -595,3 +595,59 @@ test('backups: snapshot is a working database; old snapshots are pruned; health 
   assert.ok(fs.existsSync(path.join(config.backupDir, 'keep-me.txt')), 'never deletes files it did not create');
   assert.equal((await api('GET', '/api/health')).body.ok, true);
 });
+
+/* ---------------- Security step 1: phone verification, password reset, persistent limits ---------------- */
+test('register: guest bookings are linked only after the phone is verified', async () => {
+  const phone = '0961474747';
+  // A guest booking made with this number earlier
+  const t = await firstTrip();
+  const seats = await freeSeats(t.trip_id, 1);
+  const hold = (await api('POST', `/api/trips/${t.trip_id}/holds`, { body: { seats } })).body;
+  const g = (await api('POST', '/api/bookings', { body: { legs: [{ trip_id: t.trip_id, hold_token: hold.hold_token, from_stop_id: t.boarding_points[0].stop_id, to_stop_id: t.dropping_points.at(-1).stop_id, passengers: pax(seats) }],
+    contact: { name: 'Guest', phone }, payment_method: 'station' } })).body;
+  const weak = await api('POST', '/api/auth/register', { body: { name: 'Someone', phone, password: 'password' } });
+  assert.equal(weak.status, 400);
+  const reg = await api('POST', '/api/auth/register', { body: { name: 'Someone', phone, password: 'a long passphrase' } });
+  assert.equal(reg.status, 201);
+  assert.match(reg.body.dev_code, /^\d{6}$/);
+  const tok = reg.body.token;
+  assert.equal((await api('GET', '/api/my/bookings', { token: tok })).body.length, 0, 'not linked before verification');
+  const wrong = await api('POST', '/api/auth/verify-phone', { token: tok, body: { code: reg.body.dev_code === '000000' ? '111111' : '000000' } });
+  assert.equal(wrong.status, 400);
+  assert.match(wrong.body.error, /2 tries left/);
+  const ok = await api('POST', '/api/auth/verify-phone', { token: tok, body: { code: reg.body.dev_code } });
+  assert.equal(ok.body.linked_bookings, 1);
+  assert.equal((await api('GET', '/api/my/bookings', { token: tok })).body[0].ref, g.bookings[0].ref);
+  const reuse = await api('POST', '/api/auth/verify-phone', { token: tok, body: { code: reg.body.dev_code } });
+  assert.equal(reuse.status, 400, 'codes work once');
+});
+
+test('password reset by SMS code: generic answer, 3 tries, signs out old sessions, SMS notice', async () => {
+  const unknown = await api('POST', '/api/auth/otp', { body: { purpose: 'reset', phone: '0961999888' } });
+  assert.equal(unknown.status, 200);
+  assert.equal(unknown.body.dev_code, undefined, 'no code for numbers without an account');
+  const phone = '0961474747';
+  const oldTok = (await api('POST', '/api/auth/login', { body: { phone, password: 'a long passphrase' } })).body.token;
+  const r = await api('POST', '/api/auth/otp', { body: { purpose: 'reset', phone } });
+  assert.equal(r.body.message, unknown.body.message, 'same answer whether or not the account exists');
+  for (let i = 0; i < 3; i++) await api('POST', '/api/auth/password/reset', { body: { phone, code: '999999', password: 'another long phrase' } });
+  const locked = await api('POST', '/api/auth/password/reset', { body: { phone, code: r.body.dev_code, password: 'another long phrase' } });
+  assert.equal(locked.status, 400);
+  assert.match(locked.body.error, /Too many wrong codes|expired/);
+  const r2 = await api('POST', '/api/auth/otp', { body: { purpose: 'reset', phone } });
+  const done = await api('POST', '/api/auth/password/reset', { body: { phone, code: r2.body.dev_code, password: 'another long phrase' } });
+  assert.equal(done.status, 200);
+  assert.equal((await api('GET', '/api/me', { token: oldTok })).status, 401, 'old sessions are signed out');
+  assert.equal((await api('POST', '/api/auth/login', { body: { phone, password: 'another long phrase' } })).status, 200);
+  assert.ok(db.prepare("SELECT 1 FROM notifications WHERE kind = 'password_changed' AND recipient = '260961474747'").get());
+  assert.equal((await api('POST', '/api/auth/otp', { body: { purpose: 'reset', phone } })).status, 200, 'third code');
+  const fourth = await api('POST', '/api/auth/otp', { body: { purpose: 'reset', phone } });
+  assert.equal(fourth.status, 429, 'at most 3 codes per 15 minutes');
+});
+
+test('login lockout survives a restart (stored in the database)', async () => {
+  for (let i = 0; i < 8; i++) await api('POST', '/api/auth/login', { body: { phone: '0961222111', password: 'wrong-password' } });
+  const blocked = await api('POST', '/api/auth/login', { body: { phone: '0961222111', password: 'wrong-password' } });
+  assert.equal(blocked.status, 429);
+  assert.ok(db.prepare("SELECT count FROM rate_limits WHERE key = 'login:260961222111'").get().count >= 8);
+});

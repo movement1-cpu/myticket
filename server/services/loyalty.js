@@ -32,6 +32,7 @@ export function checkRedeem(db, user, points) {
   if (!points) return 0;
   if (!Number.isInteger(points) || points < 0) throw bad('Points must be a whole number.');
   if (user?.role !== 'passenger') throw bad('Sign in as a passenger to use loyalty points.');
+  if (!user.phone_verified) throw bad('Verify your phone number to use loyalty points.');
   const bal = pointsBalance(db, user.id);
   if (points > bal) throw bad(`You have ${bal} points.`);
   return points;
