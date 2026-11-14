@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { tx } from '../db.js';
-import { requireRole } from '../auth.js';
+import { requireRole, verifyPassword } from '../auth.js';
 import { bad, notFound, forbidden, conflict, normPhone, required, isDate, HttpError, localDate } from '../util.js';
 import { searchTrips, tripRow, routeStops, tripPosition, ensureTrips } from '../services/trips.js';
 import { seatMap, holdSeats, releaseHold } from '../services/seats.js';
@@ -11,7 +11,7 @@ import { providers } from '../services/payments/providers.js';
 import { bus } from '../services/events.js';
 import { pointsBalance, loyaltyTerms } from '../services/loyalty.js';
 import { LANGS, t as tr } from '../i18n.js';
-import { rateLimit } from '../security.js';
+import { rateLimit, decrypt } from '../security.js';
 import { queue } from '../services/notify.js';
 import { joinWaitlist, getOffer } from '../services/waitlist.js';
 import { config } from '../config.js';
@@ -231,6 +231,50 @@ export default function publicRoutes(db) {
     } catch (e) { if (String(e.message).includes('UNIQUE')) throw conflict('You already rated this trip.'); throw e; }
     res.status(201).json({ ok: true });
   });
+  /* ---------- the passenger's own data ---------- */
+  /** Everything we hold about this passenger, as JSON (their own ID numbers included, decrypted). */
+  r.get('/my/data', passenger, (req, res) => {
+    rateLimit(db, `export:${req.user.id}`, 5, 3600);
+    const me = db.prepare('SELECT id, name, phone, email, lang, phone_verified, created_at FROM users WHERE id = ?').get(req.user.id);
+    const bookings = db.prepare('SELECT id, ref, status, trip_id, contact_name, contact_phone, contact_email, total, payment_method, created_at FROM bookings WHERE user_id = ? ORDER BY id').all(req.user.id)
+      .map(b => ({ ...b, passengers: db.prepare('SELECT seat_no, passenger_name, id_type, id_number, gender, is_child, fare, boarded_at FROM booking_seats WHERE booking_id = ?').all(b.id)
+        .map(p => ({ ...p, id_number: p.id_number === 'REMOVED' ? 'erased after the retention period' : decrypt(p.id_number) })) }));
+    const out = { exported_at: new Date().toISOString(), account: me, bookings,
+      loyalty_points: db.prepare('SELECT points, kind, note, created_at FROM loyalty_ledger WHERE user_id = ? ORDER BY id').all(req.user.id),
+      reviews: db.prepare('SELECT r.cleanliness, r.punctuality, r.driver, r.comment, r.created_at FROM reviews r JOIN bookings b ON b.id = r.booking_id WHERE b.user_id = ?').all(req.user.id),
+      help_requests: db.prepare('SELECT category, description, status, resolution, created_at FROM disputes WHERE user_id = ?').all(req.user.id),
+      sign_ins: db.prepare('SELECT created_at, last_seen, ip, user_agent FROM sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 50').all(req.user.id) };
+    db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id) VALUES (?,?,?,?)').run(req.user.id, 'data_export', 'user', String(req.user.id));
+    res.set('Content-Disposition', 'attachment; filename="myticket-my-data.json"').json(out);
+  });
+
+  /**
+   * Delete the account: personal details are removed or replaced; booking and payment records stay (anonymised)
+   * because the bus company and the tax authority need them. Upcoming trips must be cancelled first.
+   */
+  r.post('/my/account/delete', passenger, (req, res) => {
+    const u = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+    if (!verifyPassword(req.body.password, u.password_hash)) throw bad('Your password is wrong.');
+    const upcoming = db.prepare(`SELECT COUNT(*) n FROM bookings b JOIN trips t ON t.id = b.trip_id WHERE b.user_id = ? AND b.status IN ('confirmed','reserved','pending_payment') AND t.depart_at > ?`).get(u.id, new Date().toISOString()).n;
+    if (upcoming) throw conflict(`You have ${upcoming} upcoming booking${upcoming > 1 ? 's' : ''}. Travel or cancel ${upcoming > 1 ? 'them' : 'it'} first, then delete your account.`);
+    tx(db, () => {
+      const ids = db.prepare('SELECT id FROM bookings WHERE user_id = ?').all(u.id).map(r => r.id);
+      for (const id of ids) {
+        db.prepare("UPDATE bookings SET contact_name = 'Deleted account', contact_phone = 'deleted', contact_email = NULL WHERE id = ?").run(id);
+        db.prepare("UPDATE booking_seats SET passenger_name = 'Deleted account', id_number = 'REMOVED', id_hint = 'removed', gender = NULL WHERE booking_id = ?").run(id);
+        db.prepare('UPDATE reviews SET comment = NULL WHERE booking_id = ?').run(id);
+      }
+      db.prepare("UPDATE disputes SET description = '[deleted by the passenger]' WHERE user_id = ? AND status != 'open'").run(u.id);
+      db.prepare("UPDATE users SET name = 'Deleted account', phone = ?, email = NULL, password_hash = 'deleted', active = 0, totp_secret = NULL, totp_enabled = 0 WHERE id = ?").run(`deleted:${u.id}:${Date.now()}`, u.id);
+      db.prepare("UPDATE sessions SET revoked_at = datetime('now') WHERE user_id = ?").run(u.id);
+      db.prepare('DELETE FROM known_devices WHERE user_id = ?').run(u.id);
+      db.prepare('DELETE FROM phone_prefs WHERE phone = ?').run(u.phone);
+      db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id) VALUES (?,?,?,?)').run(u.id, 'account_deleted', 'user', String(u.id));
+    });
+    queue(db, { channel: 'sms', to: u.phone, kind: 'account_deleted', body: 'MyTicket: Your account and personal details have been deleted. Thank you for travelling with us.' });
+    res.json({ ok: true });
+  });
+
   r.post('/my/disputes', passenger, (req, res) => {
     required(req.body, ['category', 'description']);
     let bookingId = null;

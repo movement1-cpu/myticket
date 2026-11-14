@@ -167,6 +167,7 @@ async function fees(main) {
       <label class="field"><span>Pay-at-station reservation (minutes)</span><input name="reserve_minutes" type="number" min="10" max="120" value="${s.reserve_minutes}"></label></div>
       <h3>Money and sign-in safety</h3><div class="grid2">
         <label class="field"><span>Refunds above this (K) need a second admin's approval</span><input name="refund_approval_threshold" type="number" min="0" value="${s.refund_approval_threshold}"></label>
+        <label class="field"><span>Erase full ID numbers this many days after the trip</span><input name="id_retention_days" type="number" min="1" max="365" value="${s.id_retention_days}"></label>
         <label class="chip" style="align-self:end;justify-self:start"><input type="checkbox" name="mfa_operator_required" ${s.mfa_operator_required ? 'checked' : ''}>Bus company owners must use two-step sign-in</label></div>
       <h3>Passenger reminders and waitlist</h3><div class="grid2">
         <label class="field"><span>SMS reminder before departure (hours, 0 = off)</span><input name="reminder_hours" type="number" min="0" max="24" value="${s.reminder_hours}"></label>

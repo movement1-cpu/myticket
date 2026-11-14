@@ -10,6 +10,7 @@ import { normLuggage, LUGGAGE_SQL } from './luggage.js';
 import { checkRedeem, maxRedeemable, pointsValue, restorePoints, awardPoints } from './loyalty.js';
 import { logTripKm } from './maintenance.js';
 import { processWaitlist, markWaitlistBooked } from './waitlist.js';
+import { protectId, decrypt } from '../security.js';
 import { t as tr, langFor } from '../i18n.js';
 import { providers } from './payments/providers.js';
 
@@ -100,9 +101,9 @@ export function createBookings(db, { legs, contact, promo_code, payment_method, 
         contact.name.trim(), phone, email, price.fare_total, price.discount, price.booking_fee, total, price.commission,
         promo?.code ?? null, payment_method, expires, status === 'confirmed' ? now.toISOString() : null, price.luggage_fee, ptsUsed, ptsDisc, language, source);
       if (ptsUsed) db.prepare("INSERT INTO loyalty_ledger (user_id, booking_id, points, kind, note) VALUES (?,?,?,'redeem',?)").run(user.id, b.id, -ptsUsed, `Used on ${bookingRef}`);
-      const insSeat = db.prepare(`INSERT INTO booking_seats (booking_id, trip_id, seat_no, passenger_name, id_type, id_number, gender, is_child, fare, ${LUGGAGE_SQL}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+      const insSeat = db.prepare(`INSERT INTO booking_seats (booking_id, trip_id, seat_no, passenger_name, id_type, id_number, id_hint, gender, is_child, fare, ${LUGGAGE_SQL}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
       leg.passengers.forEach((p, i) => {
-        try { insSeat.run(b.id, trip.id, String(p.seat_no), p.name.trim(), p.id_type, p.id_number.trim().toUpperCase(), p.gender || null, p.is_child ? 1 : 0, price.seat_fares[i], ...p._lug); }
+        try { insSeat.run(b.id, trip.id, String(p.seat_no), p.name.trim(), p.id_type, ...protectId(p.id_type, p.id_number), p.gender || null, p.is_child ? 1 : 0, price.seat_fares[i], ...p._lug); }
         catch (e) { if (String(e.message).includes('UNIQUE')) throw conflict(`Seat ${p.seat_no} is already booked.`, 'seat_taken'); throw e; }
       });
       db.prepare('DELETE FROM seat_holds WHERE trip_id = ? AND hold_token = ?').run(trip.id, leg.hold_token);
@@ -248,7 +249,7 @@ export function rescheduleBooking(db, booking, { trip_id, hold_token, seats, use
   const oldSeats = db.prepare('SELECT * FROM booking_seats WHERE booking_id = ? AND active = 1 ORDER BY id').all(booking.id);
   if (!Array.isArray(seats) || seats.length !== oldSeats.length) throw bad(`Pick ${oldSeats.length} seat${oldSeats.length > 1 ? 's' : ''} on the new bus.`);
   const from = stop(db, newTrip.route_id, booking.from_stop_id), to = stop(db, newTrip.route_id, booking.to_stop_id);
-  const passengers = oldSeats.map((s, i) => ({ seat_no: seats[i], name: s.passenger_name, id_type: s.id_type, id_number: s.id_number, gender: s.gender, is_child: !!s.is_child,
+  const passengers = oldSeats.map((s, i) => ({ seat_no: seats[i], name: s.passenger_name, id_type: s.id_type, id_number: decrypt(s.id_number), gender: s.gender, is_child: !!s.is_child,
     _lug: [s.lug_bags, s.lug_sacks, s.lug_containers, s.lug_boxes, s.lug_crates, s.lug_other, s.lug_note] }));
   validatePassengers(passengers, layoutForTrip(db, newTrip.id));
   const terms = operatorTerms(db, booking.operator_id);
@@ -271,8 +272,8 @@ export function rescheduleBooking(db, booking, { trip_id, hold_token, seats, use
       from.id, to.id, booking.contact_name, booking.contact_phone, booking.contact_email, price.fare_total, applied, terms.rescheduleFee, total,
       money((price.fare_total) * terms.commissionPct / 100), booking.payment_method, status === 'confirmed' ? null : addMinutes(now, Number(setting(db, 'hold_minutes'))).toISOString(),
       booking.id, status === 'confirmed' ? now.toISOString() : null, price.luggage_fee, booking.lang || 'en');
-    const ins = db.prepare(`INSERT INTO booking_seats (booking_id, trip_id, seat_no, passenger_name, id_type, id_number, gender, is_child, fare, ${LUGGAGE_SQL}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
-    passengers.forEach((p, i) => ins.run(b.id, newTrip.id, String(p.seat_no), p.name, p.id_type, p.id_number, p.gender, p.is_child ? 1 : 0, price.seat_fares[i], ...p._lug));
+    const ins = db.prepare(`INSERT INTO booking_seats (booking_id, trip_id, seat_no, passenger_name, id_type, id_number, id_hint, gender, is_child, fare, ${LUGGAGE_SQL}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    passengers.forEach((p, i) => ins.run(b.id, newTrip.id, String(p.seat_no), p.name, p.id_type, ...protectId(p.id_type, p.id_number), p.gender, p.is_child ? 1 : 0, price.seat_fares[i], ...p._lug));
     db.prepare('DELETE FROM seat_holds WHERE trip_id = ? AND hold_token = ?').run(newTrip.id, hold_token);
     // Old booking: release seats now. Its fare becomes credit, so the commission on it is reversed.
     db.prepare("UPDATE bookings SET status='cancelled', cancelled_at=datetime('now'), commission=0 WHERE id=?").run(booking.id);
@@ -310,6 +311,9 @@ export function sweep(db) {
       WHERE tr.status = 'arrived' OR datetime(tr.depart_at, '+' || (r.duration_min + tr.delay_min + 360) || ' minutes') < datetime('now'))`).run();
   awardPoints(db);
   logTripKm(db);
+  // Data minimisation: erase full ID numbers some days after the trip (the masked hint stays for the records).
+  db.prepare(`UPDATE booking_seats SET id_number = 'REMOVED' WHERE id_number != 'REMOVED' AND trip_id IN (
+      SELECT id FROM trips WHERE service_date < date('now', ?))`).run(`-${Number(setting(db, 'id_retention_days')) || 30} days`);
   // Bank account changes whose waiting period has passed take effect now.
   for (const c of db.prepare("SELECT * FROM bank_changes WHERE status = 'pending' AND effective_at <= datetime('now')").all()) {
     db.prepare('UPDATE operators SET bank_name = ?, bank_account = ?, bank_branch = ? WHERE id = ?').run(c.bank_name, c.bank_account, c.bank_branch, c.operator_id);

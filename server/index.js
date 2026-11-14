@@ -6,7 +6,7 @@ import { dispatch } from './services/notify.js';
 import { seedDemo } from './seed.js';
 import { sendReminders } from './services/maintenance.js';
 import { sendDepartureReminders } from './services/reminders.js';
-import { pruneRateLimits } from './security.js';
+import { pruneRateLimits, protectStoredIds } from './security.js';
 import { backupNow, pruneBackups } from './backup.js';
 
 const db = openDb();
@@ -17,6 +17,8 @@ if (empty && !config.isProd) {
 }
 if (empty && config.isProd) console.log('Empty database. Create the first admin with: node server/create-admin.js');
 
+const encrypted = protectStoredIds(db); // older databases: encrypt ID numbers stored in plain text
+if (encrypted) console.log(`Encrypted ${encrypted} ID numbers stored in plain text.`);
 const app = createApp(db);
 app.listen(config.port, () => console.log(`MyTicket running on ${config.baseUrl}`));
 

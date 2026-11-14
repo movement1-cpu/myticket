@@ -46,7 +46,7 @@ export default function adminRoutes(db) {
   r.get('/admin/settings', admin, (_req, res) => {
     res.json({ booking_fee: Number(setting(db, 'booking_fee')), commission_pct: Number(setting(db, 'commission_pct')), hold_minutes: Number(setting(db, 'hold_minutes')),
       reserve_minutes: Number(setting(db, 'reserve_minutes')), refund_policy: JSON.parse(setting(db, 'refund_policy')),
-      refund_approval_threshold: Number(setting(db, 'refund_approval_threshold')), mfa_operator_required: setting(db, 'mfa_operator_required') === '1',
+      refund_approval_threshold: Number(setting(db, 'refund_approval_threshold')), id_retention_days: Number(setting(db, 'id_retention_days')), mfa_operator_required: setting(db, 'mfa_operator_required') === '1',
       reminder_hours: Number(setting(db, 'reminder_hours')), waitlist_offer_minutes: Number(setting(db, 'waitlist_offer_minutes')),
       loyalty_points_per_kwacha: Number(setting(db, 'loyalty_points_per_kwacha')), loyalty_point_value: Number(setting(db, 'loyalty_point_value')), loyalty_max_pct: Number(setting(db, 'loyalty_max_pct')) });
   });
@@ -54,7 +54,7 @@ export default function adminRoutes(db) {
     const b = req.body, up = db.prepare('UPDATE settings SET value = ? WHERE key = ?');
     const num = (k, min, max) => { if (b[k] === undefined) return; const v = Number(b[k]); if (!(v >= min && v <= max)) throw bad(`${k.replace(/_/g, ' ')} must be between ${min} and ${max}.`); up.run(String(v), k); };
     tx(db, () => { num('booking_fee', 0, 500); num('commission_pct', 0, 30); num('hold_minutes', 5, 15); num('reserve_minutes', 10, 120);
-      num('reminder_hours', 0, 24); num('refund_approval_threshold', 0, 100000);
+      num('reminder_hours', 0, 24); num('refund_approval_threshold', 0, 100000); num('id_retention_days', 1, 365);
       if (b.mfa_operator_required !== undefined) up.run(b.mfa_operator_required ? '1' : '0', 'mfa_operator_required'); num('waitlist_offer_minutes', 10, 120);
       num('loyalty_points_per_kwacha', 0, 1); num('loyalty_point_value', 0, 1); num('loyalty_max_pct', 0, 100); });
     audit(req, 'settings', 'settings', '-', JSON.stringify(b));

@@ -392,6 +392,7 @@ const DEFAULT_SETTINGS = {
   hold_minutes: '10',           // seat lock during checkout
   reserve_minutes: '30',        // pay-at-station hold
   mfa_operator_required: '0',
+  id_retention_days: '30',          // full ID numbers are erased this many days after the trip
   refund_approval_threshold: '500', // refunds an admin decides above this (K) need a second admin's approval
   bank_change_hours: '48',          // wait before a new bank account is used for payouts      // 1 = bus company owners must use two-step sign-in too (admins always must)
   reminder_hours: '3',              // SMS reminder this many hours before departure (0 = off)
@@ -466,6 +467,7 @@ function migrate(db) {
   add('users', 'totp_pending_secret', 'TEXT');  // encrypted, during setup
   add('users', 'totp_enabled', 'INTEGER NOT NULL DEFAULT 0');
   add('users', 'admin_scope', "TEXT NOT NULL DEFAULT 'full'");
+  add('booking_seats', 'id_hint', 'TEXT'); // masked ID shown on screens; id_number itself is encrypted
 }
 
 /** Run fn inside a write transaction. BEGIN IMMEDIATE serialises writers, so check-then-insert is safe. */

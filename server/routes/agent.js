@@ -40,7 +40,7 @@ export default function agentRoutes(db) {
   /** Everything the device needs to board this trip offline. */
   r.get('/agent/trips/:id/manifest', ...field, (req, res) => {
     const t = myTrip(req);
-    const seats = db.prepare(`SELECT bs.id, bs.seat_no, bs.passenger_name, bs.id_type, bs.id_number, bs.is_child, bs.boarded_at, b.ref, b.status, b.contact_phone, b.channel,
+    const seats = db.prepare(`SELECT bs.id, bs.seat_no, bs.passenger_name, bs.id_type, COALESCE(bs.id_hint, '') AS id_number, bs.is_child, bs.boarded_at, b.ref, b.status, b.contact_phone, b.channel,
         bs.lug_bags, bs.lug_sacks, bs.lug_containers, bs.lug_boxes, bs.lug_crates, bs.lug_other, bs.lug_note,
         ft.name from_stop, tt.name to_stop, tt.city to_city
       FROM booking_seats bs JOIN bookings b ON b.id = bs.booking_id
@@ -84,7 +84,7 @@ export default function agentRoutes(db) {
       for (const s of fresh) db.prepare('UPDATE booking_seats SET boarded_at = ?, boarded_by = ? WHERE id = ? AND boarded_at IS NULL').run(at, req.user.id, s.id);
       record('boarded', fresh[0].id);
     });
-    return { client_id, result: 'boarded', ref, seats: fresh.map(s => ({ seat_no: s.seat_no, passenger_name: s.passenger_name, id_type: s.id_type, id_number: s.id_number, luggage: luggageOf(s) })) };
+    return { client_id, result: 'boarded', ref, seats: fresh.map(s => ({ seat_no: s.seat_no, passenger_name: s.passenger_name, id_type: s.id_type, id_number: s.id_hint, luggage: luggageOf(s) })) };
   };
 
   r.post('/agent/trips/:id/scan', ...field, (req, res) => res.json(checkin(req, req.body, myTrip(req).id)));

@@ -1,4 +1,4 @@
-import { $, html, raw, api, auth, toast, busy, formData } from './core.js';
+import { $, html, raw, api, auth, toast, busy, formData, modal, download } from './core.js';
 import * as passenger from './passenger.js';
 import * as operator from './operator.js';
 import * as admin from './admin.js';
@@ -152,11 +152,22 @@ async function securityPage(app) {
       <label class="field"><span>Current password</span><input type="password" name="current_password" autocomplete="current-password" required></label>
       <label class="field"><span>New password (8+ characters)</span><input type="password" name="password" minlength="8" autocomplete="new-password" required></label></div>
       <p class="small muted" style="margin:0">Your other devices are signed out and you get an SMS.</p><div><button class="btn">Change password</button></div></form>
+    ${auth.user.role === 'passenger' ? html`<section class="card"><h3>Your data</h3>
+      <p class="small muted" style="margin:0">Download everything we hold about you. ID numbers are stored encrypted and erased 30 days after each trip.</p>
+      <div class="row"><button class="btn ghost" id="export">Download my data</button><button class="btn danger" id="del">Delete my account</button></div></section>` : ''}
     <section class="card"><div class="head"><h3>Signed-in devices</h3><button class="btn danger sm" id="all">Sign out everywhere else</button></div>
       <div class="tablewrap"><table><tbody>${sessions.map(x => html`<tr><td><b>${x.device}</b>${x.current ? raw(' <span class="pill ok">this device</span>') : ''}<br><span class="small muted">${x.ip || ''}</span></td>
         <td class="small">Signed in ${x.created_at.slice(0, 16)}<br>Last active ${x.last_seen.slice(0, 16)}</td><td>${x.current ? '' : html`<button class="btn ghost sm" data-out="${x.id}">Sign out</button>`}</td></tr>`)}</tbody></table></div></section>
   </div>`;
   const reload = () => securityPage(app);
+  $('#export', app)?.addEventListener('click', e => busy(e.target, () => download('/my/data', 'myticket-my-data.json')));
+  $('#del', app)?.addEventListener('click', () => {
+    const m = modal(html`<h2>Delete your account?</h2><p style="margin:0">Your name, phone number, email and ID numbers are removed. Trip and payment records stay without your name, because bus companies and the tax authority need them. You cannot undo this.</p>
+      <form id="df" class="page" style="gap:10px"><label class="field"><span>Your password</span><input type="password" name="password" required autocomplete="current-password"></label>
+      <div class="row" style="justify-content:flex-end"><button type="button" class="btn ghost" data-close>Keep my account</button><button class="btn danger">Delete my account</button></div></form>`);
+    const f = $('#df', m.el);
+    f.addEventListener('submit', ev => { ev.preventDefault(); busy(f.querySelector('.danger'), async () => { await api('/my/account/delete', { method: 'POST', body: formData(f) }); m.close(); auth.clear(); toast('Your account was deleted.'); location.hash = '#/'; }); });
+  });
   $('#setup', app)?.addEventListener('click', e => busy(e.target, async () => {
     const s = await api('/auth/totp/setup', { method: 'POST' });
     $('#enroll', app).innerHTML = html`<div class="grid2" style="align-items:center"><div style="background:#fff;border-radius:8px;padding:8px;max-width:220px">${raw(s.qr_svg)}</div>

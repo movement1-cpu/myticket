@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { openDb, tx } from './db.js';
 import { config } from './config.js';
 import { hashPassword } from './auth.js';
-import { encrypt } from './security.js';
+import { encrypt, protectStoredIds } from './security.js';
 import { ensureTrips } from './services/trips.js';
 import { priceLeg } from './services/pricing.js';
 import { localDate, addDays, ref, isoWeekday } from './util.js';
@@ -240,6 +240,7 @@ export function seedDemo(db) {
     db.prepare('UPDATE users SET phone_verified = 1').run(); // demo accounts count as verified
     db.prepare("UPDATE users SET totp_secret = ?, totp_enabled = 1 WHERE role = 'admin'").run(encrypt(DEMO_TOTP_SECRET));
   });
+  protectStoredIds(db); // encrypt the demo ID numbers like real ones
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

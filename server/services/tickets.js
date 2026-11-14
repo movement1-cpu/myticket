@@ -28,7 +28,7 @@ export function ticketData(db, ref) {
   if (!b) return null;
   const board = new Date(new Date(b.depart_at).getTime() + (b.from_offset + b.delay_min) * 60000);
   const arrive = new Date(new Date(b.depart_at).getTime() + (b.to_offset + b.delay_min) * 60000);
-  const seats = db.prepare(`SELECT id, seat_no, passenger_name, id_type, id_number, gender, is_child, fare, boarded_at, active, ${LUGGAGE_SQL} FROM booking_seats WHERE booking_id = ? ORDER BY seat_no`).all(b.id)
+  const seats = db.prepare(`SELECT id, seat_no, passenger_name, id_type, COALESCE(id_hint, '') AS id_number, gender, is_child, fare, boarded_at, active, ${LUGGAGE_SQL} FROM booking_seats WHERE booking_id = ? ORDER BY seat_no`).all(b.id)
     .map(s => ({ ...s, luggage: luggageOf(s) }));
   const issuer = b.channel !== 'web' && b.created_by ? db.prepare('SELECT name FROM users WHERE id = ?').get(b.created_by)?.name : null;
   return { ...b, board_at: board.toISOString(), arrive_at: arrive.toISOString(), board_local: `${localDate(board)} ${localTime(board)}`, arrive_local: `${localDate(arrive)} ${localTime(arrive)}`, seats, issuer, qr: qrPayload(ref), url: ticketUrl(ref) };

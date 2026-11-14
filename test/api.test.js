@@ -776,3 +776,51 @@ test('bank account change waits 48 h with SMS; payouts blocked meanwhile; applie
   sweep(db);
   assert.equal(db.prepare('SELECT bank_account FROM operators WHERE id = 1').get().bank_account, '62000000001');
 });
+
+/* ---------------- Security step 4: ID numbers, retention, data rights ---------------- */
+test('ID numbers: encrypted at rest, masked on tickets and in the field app, full only on the audited manifest', async () => {
+  const t = await firstTrip();
+  const seats = await freeSeats(t.trip_id, 1);
+  const hold = (await api('POST', `/api/trips/${t.trip_id}/holds`, { token: tokens.clerk, body: { seats } })).body;
+  const r = (await api('POST', '/api/counter/bookings', { token: tokens.clerk, body: { legs: [{ trip_id: t.trip_id, hold_token: hold.hold_token, from_stop_id: t.boarding_points[0].stop_id, to_stop_id: t.dropping_points.at(-1).stop_id,
+    passengers: [{ seat_no: seats[0], name: 'Private Person', id_type: 'NRC', id_number: '987654/32/1', gender: 'M' }] }], contact: { name: 'P', phone: '0955123123' }, payment_method: 'cash' } })).body;
+  const ref = r.bookings[0].ref;
+  const row = db.prepare('SELECT id_number, id_hint FROM booking_seats WHERE booking_id = (SELECT id FROM bookings WHERE ref = ?)').get(ref);
+  assert.ok(row.id_number.startsWith('enc:v1:'), 'stored encrypted');
+  assert.ok(!row.id_number.includes('987654'));
+  assert.equal(row.id_hint, '****54/32/1');
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM booking_seats WHERE id_number NOT LIKE 'enc:v1:%' AND id_number != 'REMOVED' AND passenger_name != 'Filler'").get().n, 0, 'demo data encrypted too (Filler rows are raw test inserts)');
+  const receipt = (await api('GET', `/api/counter/receipt/${ref}`, { token: tokens.clerk })).body;
+  assert.equal(receipt.seats[0].id_number, '****54/32/1');
+  const field = (await api('GET', `/api/agent/trips/${t.trip_id}/manifest`, { token: tokens.conductor })).body;
+  assert.equal(field.seats.find(s => s.ref === ref).id_number, '****54/32/1', 'phones carry masked IDs only');
+  const masked = (await api('GET', `/api/operator/trips/${t.trip_id}/manifest`, { token: tokens.clerk })).body;
+  assert.equal(masked.passengers.find(p => p.ref === ref).id_number, '****54/32/1');
+  const before = db.prepare("SELECT COUNT(*) n FROM audit_log WHERE action = 'manifest_full_ids'").get().n;
+  const full = (await api('GET', `/api/operator/trips/${t.trip_id}/manifest?full=1`, { token: tokens.clerk })).body;
+  assert.equal(full.passengers.find(p => p.ref === ref).id_number, '987654/32/1');
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM audit_log WHERE action = 'manifest_full_ids'").get().n, before + 1, 'viewing full IDs is logged');
+  const csv = (await api('GET', `/api/operator/trips/${t.trip_id}/manifest?format=csv`, { token: tokens.clerk })).body;
+  assert.match(csv, /987654\/32\/1/);
+});
+
+test('ID numbers are erased after the retention period', async () => {
+  const old = db.prepare(`SELECT bs.id FROM booking_seats bs JOIN trips t ON t.id = bs.trip_id WHERE t.service_date < date('now', '-30 days') LIMIT 1`).get()
+    || (() => { const s = db.prepare('SELECT bs.id, bs.trip_id FROM booking_seats bs LIMIT 1').get(); db.prepare("UPDATE trips SET service_date = date('now', '-40 days') WHERE id = ?").run(s.trip_id); return s; })();
+  sweep(db);
+  const row = db.prepare('SELECT id_number, id_hint FROM booking_seats WHERE id = ?').get(old.id);
+  assert.equal(row.id_number, 'REMOVED');
+  assert.ok(row.id_hint, 'masked hint kept for the records');
+});
+
+test('passenger can download their data and delete their account', async () => {
+  const reg = (await api('POST', '/api/auth/register', { body: { name: 'Leaving User', phone: '0961313131', password: 'goodbye forever now' } })).body;
+  await api('POST', '/api/auth/verify-phone', { token: reg.token, body: { code: reg.dev_code } });
+  const data = (await api('GET', '/api/my/data', { token: reg.token })).body;
+  assert.equal(data.account.name, 'Leaving User');
+  assert.equal((await api('POST', '/api/my/account/delete', { token: reg.token, body: { password: 'wrong' } })).status, 400);
+  assert.equal((await api('POST', '/api/my/account/delete', { token: reg.token, body: { password: 'goodbye forever now' } })).status, 200);
+  assert.equal((await api('GET', '/api/me', { token: reg.token })).status, 401);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM users WHERE phone = '260961313131'").get().n, 0, 'phone number removed');
+  assert.equal((await api('POST', '/api/auth/register', { body: { name: 'Back Again', phone: '0961313131', password: 'a fresh start here' } })).status, 201, 'the number can register again');
+});

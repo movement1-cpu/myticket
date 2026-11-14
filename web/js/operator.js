@@ -81,13 +81,13 @@ async function trips(main, date = today()) {
     if (c) crewDialog(list.find(t => t.id === Number(c.dataset.crew)), () => go(date));
   });
 }
-async function showManifest(main, id) {
-  const { trip, passengers, luggage_totals } = await api(`/operator/trips/${id}/manifest`);
+async function showManifest(main, id, full = false) {
+  const { trip, passengers, luggage_totals } = await api(`/operator/trips/${id}/manifest${full ? '?full=1' : ''}`);
   const lugTotal = Object.values(luggage_totals).reduce((a, b) => a + b, 0);
   const box = $('#manifest', main);
   box.innerHTML = html`<div class="card">
     <div class="head"><div><h2>Passenger manifest</h2><span class="muted">${trip.operator_name} · ${trip.route_name} · ${trip.depart_local} · ${trip.plate}</span></div>
-      <div class="row no-print"><button class="btn ghost sm" id="csv">Download CSV</button><button class="btn sm" id="print">Print</button></div></div>
+      <div class="row no-print">${full ? raw('<span class="pill warn">Full ID numbers shown · this viewing is logged</span>') : raw('<button class="btn ghost sm" id="fullids">Show full IDs for checkpoint</button>')}<button class="btn ghost sm" id="csv">Download CSV</button><button class="btn sm" id="print">Print</button></div></div>
     <div class="grid3 small"><div><span class="label">Driver</span><br>${trip.driver_name || '—'} ${trip.licence_no ? `(${trip.licence_no})` : ''}</div><div><span class="label">Conductor</span><br>${trip.conductor_name || '—'}</div><div><span class="label">Passengers</span><br>${passengers.length} (${passengers.filter(p => p.boarded_at).length} boarded)</div></div>
     <div class="notice ok small"><b>Luggage in the hold: ${lugTotal} item${lugTotal === 1 ? '' : 's'}</b> from ${passengers.filter(p => p.luggage.has).length} passenger${passengers.filter(p => p.luggage.has).length === 1 ? '' : 's'} ·
       ${KINDS.filter(([k]) => luggage_totals[k]).map(([k, l]) => `${luggage_totals[k]} ${l.toLowerCase()}`).join(', ') || 'none'}</div>
@@ -96,8 +96,10 @@ async function showManifest(main, id) {
         <td class="small">${p.from_city} → ${p.to_city}</td><td class="small">${p.luggage.has ? p.luggage.text : '—'}</td><td class="mono">${p.ref}${p.status === 'reserved' ? raw(' <span class="pill warn">unpaid</span>') : ''}</td><td>${p.boarded_at ? '✓' : ''}</td></tr>`)}
     </tbody></table></div></div>`;
   $('#csv', box).addEventListener('click', e => busy(e.target, () => download(`/operator/trips/${id}/manifest?format=csv`, `manifest-${trip.service_date}-${trip.plate.replace(/\s/g, '')}.csv`)));
-  $('#print', box).addEventListener('click', () => window.print());
-  box.scrollIntoView({ behavior: 'smooth' });
+  $('#fullids', box)?.addEventListener('click', () => showManifest(main, id, true));
+  // Printing is for police and border checkpoints, so it uses full ID numbers (logged).
+  $('#print', box).addEventListener('click', async () => { if (!full) { await showManifest(main, id, true); } setTimeout(() => window.print(), 300); });
+  if (!full) box.scrollIntoView({ behavior: 'smooth' });
 }
 function statusDialog(t, done) {
   const next = { scheduled: ['boarding', 'delayed', 'cancelled'], boarding: ['departed', 'delayed', 'cancelled'], delayed: ['boarding', 'departed', 'delayed', 'cancelled'], departed: ['arrived', 'delayed'] }[t.status] || [];

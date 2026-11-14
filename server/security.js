@@ -97,3 +97,25 @@ export const totpUri = (secret, label) => `otpauth://totp/${encodeURIComponent(`
 
 export const sha256 = s => crypto.createHash('sha256').update(String(s)).digest('hex');
 export const randomToken = (bytes = 32) => crypto.randomBytes(bytes).toString('base64url');
+
+/* ---------- ID numbers (NRC / passport) ---------- */
+/** What staff and passengers see: enough to compare with the physical ID, not enough to misuse. */
+export function maskId(type, num) {
+  const v = String(num || '').trim().toUpperCase();
+  if (!v || v === 'REMOVED') return 'removed';
+  if (type === 'NRC' && /^\d{6}\/\d{2}\/\d$/.test(v)) return `****${v.slice(4)}`;
+  return `${'*'.repeat(Math.max(0, v.length - 4))}${v.slice(-4)}`;
+}
+/** [encrypted value, masked hint] for storage. */
+export function protectId(type, num) {
+  const v = String(num || '').trim().toUpperCase();
+  return [encrypt(v), maskId(type, v)];
+}
+/** Encrypt any ID numbers still stored in plain text (older data, seed data). Idempotent. */
+export function protectStoredIds(db) {
+  const rows = db.prepare("SELECT id, id_type, id_number FROM booking_seats WHERE id_number NOT LIKE 'enc:v1:%' AND id_number != 'REMOVED'").all();
+  const up = db.prepare('UPDATE booking_seats SET id_number = ?, id_hint = ? WHERE id = ?');
+  db.exec('BEGIN');
+  try { for (const r of rows) up.run(...protectId(r.id_type, r.id_number), r.id); db.exec('COMMIT'); } catch (e) { db.exec('ROLLBACK'); throw e; }
+  return rows.length;
+}

@@ -13,6 +13,7 @@ import { dueItems, tripBlockers } from '../services/maintenance.js';
 import { notifyContact, queue } from '../services/notify.js';
 import { ticketData, qrSvg } from '../services/tickets.js';
 import { luggageOf, LUGGAGE_KINDS } from '../services/luggage.js';
+import { decrypt } from '../security.js';
 
 const CLASSES = ['Luxury', 'Semi-Luxury', 'VIP Sleeper', 'Express', 'Standard'];
 const AMENITIES = ['Wi-Fi', 'AC', 'USB Charging', 'Toilet', 'Reclining Seats', 'TV', 'Refreshments', 'Blanket'];
@@ -331,14 +332,17 @@ export default function operatorRoutes(db) {
   /** Passenger manifest for police / border checkpoints. ?format=csv for a download. */
   r.get('/operator/trips/:id/manifest', ...desk, (req, res) => {
     const t = mine('trips', req.params.id, req.operatorId);
-    const rows = db.prepare(`SELECT bs.seat_no, bs.passenger_name, bs.id_type, bs.id_number, bs.gender, bs.is_child, b.contact_phone, b.ref, b.status, b.channel,
+    // Full ID numbers only for the official manifest (print / CSV / "show full IDs"), and every viewing is logged.
+    const full = req.query.format === 'csv' || req.query.full === '1';
+    const rows = db.prepare(`SELECT bs.seat_no, bs.passenger_name, bs.id_type, bs.id_number id_enc, bs.id_hint, bs.gender, bs.is_child, b.contact_phone, b.ref, b.status, b.channel,
         ft.city from_city, ft.name from_stop, tt.city to_city, tt.name to_stop, bs.boarded_at,
         bs.lug_bags, bs.lug_sacks, bs.lug_containers, bs.lug_boxes, bs.lug_crates, bs.lug_other, bs.lug_note
       FROM booking_seats bs JOIN bookings b ON b.id = bs.booking_id
       JOIN route_stops fs ON fs.id = b.from_stop_id JOIN terminals ft ON ft.id = fs.terminal_id
       JOIN route_stops ts ON ts.id = b.to_stop_id JOIN terminals tt ON tt.id = ts.terminal_id
       WHERE bs.trip_id = ? AND bs.active = 1 AND b.status IN ('confirmed','completed','reserved') ORDER BY CAST(bs.seat_no AS INTEGER), bs.seat_no`).all(t.id)
-      .map(r => ({ ...r, luggage: luggageOf(r) }));
+      .map(({ id_enc, ...r }) => ({ ...r, id_number: full ? (id_enc === 'REMOVED' ? 'removed after retention period' : decrypt(id_enc)) : (r.id_hint || ''), luggage: luggageOf(r) }));
+    if (full) audit(req, req.query.format === 'csv' ? 'manifest_csv' : 'manifest_full_ids', 'trip', t.id, `${rows.length} passengers`);
     const luggage_totals = Object.fromEntries(LUGGAGE_KINDS.map(([k]) => [k, rows.reduce((a, r) => a + r.luggage.items[k], 0)]));
     if (req.query.format === 'csv') {
       const head = ['Seat', 'Passenger', 'ID type', 'ID number', 'Gender', 'Child', 'Phone', 'Booking', 'Status', 'From', 'To', 'Boarded', 'Luggage',
