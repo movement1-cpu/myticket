@@ -220,7 +220,10 @@ CREATE TABLE IF NOT EXISTS refunds (
   id INTEGER PRIMARY KEY,
   booking_id INTEGER NOT NULL REFERENCES bookings(id),
   amount REAL NOT NULL, reason TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','paid','failed')),
+  -- awaiting_approval: an admin decided it and it is above the threshold; a second admin must approve.
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('awaiting_approval','pending','paid','failed')),
+  created_by INTEGER REFERENCES users(id), approved_by INTEGER REFERENCES users(id), approved_at TEXT,
+  paid_by INTEGER REFERENCES users(id), paid_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -274,9 +277,24 @@ CREATE TABLE IF NOT EXISTS settlements (
   id INTEGER PRIMARY KEY,
   operator_id INTEGER NOT NULL REFERENCES operators(id),
   amount REAL NOT NULL,
-  status TEXT NOT NULL DEFAULT 'requested' CHECK (status IN ('requested','paid','rejected')),
+  -- requested → approved (admin A) → paid (admin B, never A) | rejected
+  status TEXT NOT NULL DEFAULT 'requested' CHECK (status IN ('requested','approved','paid','rejected')),
   bank_snapshot TEXT, note TEXT,
+  requested_by INTEGER REFERENCES users(id), approved_by INTEGER REFERENCES users(id), approved_at TEXT,
+  paid_by INTEGER REFERENCES users(id),
   created_at TEXT NOT NULL DEFAULT (datetime('now')), processed_at TEXT
+);
+
+-- Bank account changes take effect after a 48-hour wait, with an SMS to the owner, so a hijacked
+-- account cannot redirect payouts at once.
+CREATE TABLE IF NOT EXISTS bank_changes (
+  id INTEGER PRIMARY KEY,
+  operator_id INTEGER NOT NULL REFERENCES operators(id),
+  bank_name TEXT NOT NULL, bank_account TEXT NOT NULL, bank_branch TEXT,
+  requested_by INTEGER REFERENCES users(id),
+  requested_at TEXT NOT NULL DEFAULT (datetime('now')), effective_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','applied','cancelled')),
+  cancelled_by INTEGER REFERENCES users(id)
 );
 
 CREATE TABLE IF NOT EXISTS disputes (
@@ -373,7 +391,9 @@ const DEFAULT_SETTINGS = {
   commission_pct: '8',          // % of fare kept by platform
   hold_minutes: '10',           // seat lock during checkout
   reserve_minutes: '30',        // pay-at-station hold
-  mfa_operator_required: '0',      // 1 = bus company owners must use two-step sign-in too (admins always must)
+  mfa_operator_required: '0',
+  refund_approval_threshold: '500', // refunds an admin decides above this (K) need a second admin's approval
+  bank_change_hours: '48',          // wait before a new bank account is used for payouts      // 1 = bus company owners must use two-step sign-in too (admins always must)
   reminder_hours: '3',              // SMS reminder this many hours before departure (0 = off)
   waitlist_offer_minutes: '30',     // how long freed seats are held for the next person on the waitlist
   loyalty_points_per_kwacha: '0.1', // 1 point per K10 of fare on completed trips
@@ -393,8 +413,28 @@ export function openDb(file = config.dbFile) {
   return db;
 }
 
+/**
+ * SQLite cannot change a CHECK constraint in place. If an existing table's definition lacks `marker`,
+ * rebuild it from the current SCHEMA definition and copy the rows across (columns in common).
+ */
+function rebuild(db, table, marker) {
+  const cur = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)?.sql || '';
+  if (cur.includes(marker)) return;
+  const def = SCHEMA.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`))[0];
+  const oldCols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+  db.exec('PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE');
+  try {
+    db.exec(def.replace(`CREATE TABLE IF NOT EXISTS ${table} (`, `CREATE TABLE ${table}__new (`));
+    const newCols = new Set(db.prepare(`PRAGMA table_info(${table}__new)`).all().map(c => c.name));
+    const cols = oldCols.filter(c => newCols.has(c)).join(', ');
+    db.exec(`INSERT INTO ${table}__new (${cols}) SELECT ${cols} FROM ${table}; DROP TABLE ${table}; ALTER TABLE ${table}__new RENAME TO ${table}; COMMIT`);
+  } catch (e) { db.exec('ROLLBACK'); throw e; } finally { db.exec('PRAGMA foreign_keys = ON'); }
+}
+
 /** Additive migrations for databases created by earlier versions. */
 function migrate(db) {
+  rebuild(db, 'refunds', "'awaiting_approval'");
+  rebuild(db, 'settlements', "'approved'");
   const has = (table, col) => db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === col);
   const add = (table, col, def) => { if (!has(table, col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`); };
   for (const c of ['lug_bags', 'lug_sacks', 'lug_containers', 'lug_boxes', 'lug_crates', 'lug_other']) add('booking_seats', c, 'INTEGER NOT NULL DEFAULT 0');

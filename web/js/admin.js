@@ -1,4 +1,4 @@
-import { $, $$, html, raw, api, toast, modal, busy, formData, kwacha, kw0, dayOf, today, pill, openBlob, bars, phoneFmt } from './core.js';
+import { $, $$, html, raw, api, auth, toast, modal, busy, formData, kwacha, kw0, dayOf, today, pill, openBlob, bars, phoneFmt } from './core.js';
 
 const SECTIONS = [
   ['overview', 'Overview'], ['operators', 'Bus companies'], ['disputes', 'Complaints & disputes'], ['payments', 'Payments & refunds'],
@@ -105,27 +105,52 @@ async function disputes(main, status = 'open') {
 }
 
 async function payments(main) {
-  const [failed, refunds] = await Promise.all([api('/admin/payments?status=failed'), api('/admin/refunds?status=pending')]);
+  const me = auth.user.id;
+  const [failed, refunds] = await Promise.all([api('/admin/payments?status=failed'), api('/admin/refunds?status=open')]);
+  const action = r => {
+    if (r.status === 'awaiting_approval') return r.created_by === me ? html`<span class="small muted">Waiting for another admin to approve</span>` : html`<button class="btn sm" data-ref="${r.id}" data-to="approved">Approve</button>`;
+    if (r.created_by === me || r.approved_by === me) return html`<span class="small muted">Another admin must pay this</span>`;
+    return html`<div class="row" style="gap:4px;flex-wrap:nowrap"><button class="btn sm" data-ref="${r.id}" data-to="paid">Paid</button><button class="btn danger sm" data-ref="${r.id}" data-to="failed">Failed</button></div>`;
+  };
   main.innerHTML = html`<div class="head"><h1>Payments & refunds</h1></div>
-    <div class="card"><h3>Refunds to pay out (${refunds.length})</h3><p class="small muted" style="margin:0">Send the money from the mobile money or card merchant portal, then mark it paid here. The passenger is not told until you mark it.</p>
-      ${refunds.length ? html`<div class="tablewrap"><table><thead><tr><th>Booking</th><th>Company</th><th>To</th><th class="r">Amount</th><th>Reason</th><th></th></tr></thead><tbody>
-        ${refunds.map(r => html`<tr><td class="mono">${r.ref}</td><td>${r.operator}</td><td class="small">${r.payment_method || '—'} ${phoneFmt(r.contact_phone)}</td><td class="r num">${kwacha(r.amount)}</td><td class="small">${r.reason}</td>
-          <td><div class="row" style="gap:4px;flex-wrap:nowrap"><button class="btn sm" data-ref="${r.id}" data-to="paid">Paid</button><button class="btn danger sm" data-ref="${r.id}" data-to="failed">Failed</button></div></td></tr>`)}</tbody></table></div>` : raw('<div class="empty small">No refunds waiting.</div>')}</div>
+    <div class="card"><h3>Refunds (${refunds.length})</h3><p class="small muted" style="margin:0">Send the money from the mobile money or card merchant portal, then mark it paid. Refunds an admin decides above the approval limit need a second admin, and nobody can pay out a refund they created or approved.</p>
+      ${refunds.length ? html`<div class="tablewrap"><table><thead><tr><th>Booking</th><th>Company</th><th>To</th><th class="r">Amount</th><th>Reason</th><th>Status</th><th></th></tr></thead><tbody>
+        ${refunds.map(r => html`<tr><td class="mono">${r.ref}</td><td>${r.operator}</td><td class="small">${r.payment_method || '—'} ${phoneFmt(r.contact_phone)}</td><td class="r num">${kwacha(r.amount)}</td>
+          <td class="small">${r.reason}${r.created_by_name ? html`<br><span class="muted">by ${r.created_by_name}${r.approved_by_name ? `, approved by ${r.approved_by_name}` : ''}</span>` : ''}</td><td>${pill(r.status === 'awaiting_approval' ? 'requested' : r.status)}</td><td>${action(r)}</td></tr>`)}</tbody></table></div>` : raw('<div class="empty small">No refunds waiting.</div>')}</div>
     <div class="card"><h3>Failed payments, most recent</h3>${failed.length ? html`<div class="tablewrap"><table><thead><tr><th>When</th><th>Method</th><th>Number</th><th class="r">Amount</th><th>Reason</th><th>Bookings</th></tr></thead><tbody>
       ${failed.map(p => html`<tr><td class="small">${p.created_at}</td><td>${p.provider.toUpperCase()}</td><td class="num">${phoneFmt(p.msisdn || p.phone)}</td><td class="r num">${kwacha(p.amount)}</td><td class="small">${p.failure_reason}</td><td class="mono small">${p.refs}</td></tr>`)}</tbody></table></div>` : raw('<div class="empty small">No failed payments.</div>')}</div>`;
   main.addEventListener('click', e => { const b = e.target.closest('[data-ref]'); if (b) busy(b, async () => { await api('/admin/refunds/' + b.dataset.ref, { method: 'POST', body: { status: b.dataset.to } }); toast('Updated.'); payments(main); }); });
 }
 
 async function settlements(main) {
-  const list = await api('/admin/settlements');
+  const me = auth.user.id;
+  const [list, changes] = await Promise.all([api('/admin/settlements'), api('/admin/bank-changes')]);
+  const recent = d => d && (Date.now() - new Date(d.replace(' ', 'T') + 'Z')) < 7 * 864e5;
+  const action = s => {
+    if (s.status === 'requested') return s.bank_change_pending ? html`<span class="small" style="color:var(--warn)">Bank change pending</span> <button class="btn danger sm" data-s="${s.id}" data-to="rejected">Reject</button>`
+      : html`<div class="row" style="gap:4px;flex-wrap:nowrap"><button class="btn sm" data-s="${s.id}" data-to="approved">Approve</button><button class="btn danger sm" data-s="${s.id}" data-to="rejected">Reject</button></div>`;
+    if (s.status === 'approved') return s.approved_by === me ? html`<span class="small muted">You approved it. Another admin must transfer and mark it paid.</span>`
+      : html`<div class="row" style="gap:4px;flex-wrap:nowrap"><button class="btn sm" data-s="${s.id}" data-to="paid">Mark paid</button><button class="btn danger sm" data-s="${s.id}" data-to="rejected">Reject</button></div>`;
+    return html`<span class="small muted">${s.note || ''}${s.paid_by_name ? ` · paid by ${s.paid_by_name}` : ''}</span>`;
+  };
   main.innerHTML = html`<div class="head"><h1>Operator payouts</h1></div>
-    ${list.length ? html`<div class="tablewrap"><table><thead><tr><th>Requested</th><th>Company</th><th class="r">Amount</th><th>Bank</th><th>Balance check</th><th>Status</th><th></th></tr></thead><tbody>
+    <p class="small muted" style="margin:0">Two people for every payout: one admin approves, a different admin makes the bank transfer and marks it paid.</p>
+    ${list.length ? html`<div class="tablewrap"><table><thead><tr><th>Requested</th><th>Company</th><th class="r">Amount</th><th>Bank</th><th>Checks</th><th>Status</th><th></th></tr></thead><tbody>
       ${list.map(s => html`<tr><td class="small">${s.created_at.slice(0, 16)}</td><td>${s.operator}</td><td class="r num"><b>${kwacha(s.amount)}</b></td><td class="small">${s.bank_snapshot}</td>
-        <td class="small">${s.balance ? html`Earned ${kw0(s.balance.earned)}, withdrawn ${kw0(s.balance.withdrawn)}${s.balance.available < 0 ? raw(' <span class="pill bad">overdrawn</span>') : ''}` : ''}</td><td>${pill(s.status)}</td>
-        <td>${s.status === 'requested' ? html`<div class="row" style="gap:4px;flex-wrap:nowrap"><button class="btn sm" data-s="${s.id}" data-to="paid">Mark paid</button><button class="btn danger sm" data-s="${s.id}" data-to="rejected">Reject</button></div>` : html`<span class="small muted">${s.note || ''}</span>`}</td></tr>`)}</tbody></table></div>` : raw('<div class="empty">No payout requests.</div>')}`;
+        <td class="small">${s.balance ? html`Earned ${kw0(s.balance.earned)}, withdrawn ${kw0(s.balance.withdrawn)}${s.balance.available < 0 ? raw(' <span class="pill bad">overdrawn</span>') : ''}` : ''}
+          ${recent(s.bank_changed_at) ? raw('<br><span class="pill warn">bank account changed this week</span>') : ''}${s.approved_by_name ? html`<br><span class="muted">approved by ${s.approved_by_name}</span>` : ''}</td>
+        <td>${pill(s.status)}</td><td>${action(s)}</td></tr>`)}</tbody></table></div>` : raw('<div class="empty">No payout requests.</div>')}
+    <div class="card"><h3>Bank account changes</h3><p class="small muted" style="margin:0">New bank details take effect after a waiting period, and the company owner is told by SMS. Cancel anything that looks wrong.</p>
+      ${changes.length ? html`<div class="tablewrap"><table><thead><tr><th>Company</th><th>From</th><th>To</th><th>Requested</th><th>Takes effect</th><th>Status</th><th></th></tr></thead><tbody>
+        ${changes.map(c => html`<tr><td>${c.operator}</td><td class="small">${c.cur_bank || ''} …${String(c.cur_account || '').slice(-4)}</td><td class="small">${c.bank_name} …${c.bank_account.slice(-4)}</td>
+          <td class="small">${c.requested_at.slice(0, 16)}<br>${c.requested_by_name || ''}</td><td class="small">${c.effective_at.slice(0, 16)}</td><td>${pill(c.status === 'applied' ? 'paid' : c.status === 'cancelled' ? 'rejected' : 'pending')}</td>
+          <td>${c.status === 'pending' ? html`<button class="btn danger sm" data-bc="${c.id}">Cancel</button>` : ''}</td></tr>`)}</tbody></table></div>` : raw('<div class="empty small">No bank changes.</div>')}</div>`;
   main.addEventListener('click', e => {
+    const bc = e.target.closest('[data-bc]');
+    if (bc) return busy(bc, async () => { await api(`/admin/bank-changes/${bc.dataset.bc}/cancel`, { method: 'POST', body: {} }); toast('Bank change cancelled.'); settlements(main); });
     const b = e.target.closest('[data-s]'); if (!b) return;
-    const m = modal(html`<h2>${b.dataset.to === 'paid' ? 'Confirm bank transfer' : 'Reject payout'}</h2><form id="nf" class="page" style="gap:10px"><label class="field"><span>${b.dataset.to === 'paid' ? 'Bank transfer reference' : 'Reason'}</span><input name="note" required></label>
+    if (b.dataset.to === 'approved') return busy(b, async () => { await api('/admin/settlements/' + b.dataset.s, { method: 'POST', body: { status: 'approved' } }); toast('Approved. Another admin must now transfer and mark it paid.'); settlements(main); });
+    const m = modal(html`<h2>${b.dataset.to === 'paid' ? 'Confirm bank transfer' : 'Reject payout'}</h2><form id="nf" class="page" style="gap:10px"><label class="field"><span>${b.dataset.to === 'paid' ? 'Bank transfer reference' : 'Reason (the company sees it)'}</span><input name="note" required></label>
       <div class="row" style="justify-content:flex-end"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn">Confirm</button></div></form>`);
     const f = $('#nf', m.el);
     f.addEventListener('submit', ev => { ev.preventDefault(); busy(f.querySelector('.btn:not(.ghost)'), async () => { await api('/admin/settlements/' + b.dataset.s, { method: 'POST', body: { status: b.dataset.to, note: f.note.value } }); m.close(); settlements(main); }); });
@@ -140,6 +165,9 @@ async function fees(main) {
       <label class="field"><span>Commission on fares (%)</span><input name="commission_pct" type="number" step="0.1" min="0" max="30" value="${s.commission_pct}"></label>
       <label class="field"><span>Seat lock during checkout (minutes, 5–15)</span><input name="hold_minutes" type="number" min="5" max="15" value="${s.hold_minutes}"></label>
       <label class="field"><span>Pay-at-station reservation (minutes)</span><input name="reserve_minutes" type="number" min="10" max="120" value="${s.reserve_minutes}"></label></div>
+      <h3>Money and sign-in safety</h3><div class="grid2">
+        <label class="field"><span>Refunds above this (K) need a second admin's approval</span><input name="refund_approval_threshold" type="number" min="0" value="${s.refund_approval_threshold}"></label>
+        <label class="chip" style="align-self:end;justify-self:start"><input type="checkbox" name="mfa_operator_required" ${s.mfa_operator_required ? 'checked' : ''}>Bus company owners must use two-step sign-in</label></div>
       <h3>Passenger reminders and waitlist</h3><div class="grid2">
         <label class="field"><span>SMS reminder before departure (hours, 0 = off)</span><input name="reminder_hours" type="number" min="0" max="24" value="${s.reminder_hours}"></label>
         <label class="field"><span>Hold freed seats for the next person on the waitlist (minutes)</span><input name="waitlist_offer_minutes" type="number" min="10" max="120" value="${s.waitlist_offer_minutes}"></label></div>
@@ -152,7 +180,7 @@ async function fees(main) {
       <div class="small muted">Default refund policy: ${s.refund_policy.map(t => `${t.pct}% if ${t.hours}h+ before`).join(', ')}. Companies set their own.</div>
       <div><button class="btn">Save</button></div></form>`;
   const f = $('#ff', main);
-  f.addEventListener('submit', e => { e.preventDefault(); busy(f.querySelector('button'), async () => { await api('/admin/settings', { method: 'PUT', body: formData(f) }); toast('Saved. New bookings use these values.'); }); });
+  f.addEventListener('submit', e => { e.preventDefault(); busy(f.querySelector('button'), async () => { const v = formData(f); await api('/admin/settings', { method: 'PUT', body: { ...v, mfa_operator_required: !!v.mfa_operator_required } }); toast('Saved. New bookings use these values.'); }); });
 }
 
 async function promos(main) {

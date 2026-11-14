@@ -729,3 +729,50 @@ test('staff sessions end after 12 hours idle', async () => {
   assert.equal((await api('GET', '/api/me', { token: tok })).status, 401);
   tokens.clerk = await login('0960000003');
 });
+
+/* ---------------- Security step 3: maker-checker for money ---------------- */
+test('payouts: approve by one admin, paid by another; never the same person', async () => {
+  const admin2 = await login('0950000002');
+  const req = (await api('POST', '/api/operator/settlements', { token: tokens.operator, body: { amount: 150 } })).body;
+  assert.equal((await api('POST', `/api/admin/settlements/${req.id}`, { token: tokens.admin, body: { status: 'paid', note: 'TRX1' } })).status, 409, 'cannot skip approval');
+  assert.equal((await api('POST', `/api/admin/settlements/${req.id}`, { token: tokens.admin, body: { status: 'approved' } })).status, 200);
+  const same = await api('POST', `/api/admin/settlements/${req.id}`, { token: tokens.admin, body: { status: 'paid', note: 'TRX1' } });
+  assert.equal(same.status, 403);
+  assert.match(same.body.error, /different admin/);
+  assert.equal((await api('POST', `/api/admin/settlements/${req.id}`, { token: admin2, body: { status: 'paid', note: 'ZANACO-TRX-889' } })).status, 200);
+  const row = db.prepare('SELECT * FROM settlements WHERE id = ?').get(req.id);
+  assert.notEqual(row.approved_by, row.paid_by);
+});
+
+test('refunds above the threshold need a second admin; the creator cannot mark them paid', async () => {
+  const admin2 = await login('0950000002');
+  const b = db.prepare("SELECT id, user_id, total FROM bookings WHERE status = 'completed' AND total > 600 AND user_id IS NOT NULL LIMIT 1").get();
+  const d = db.prepare("INSERT INTO disputes (booking_id, user_id, category, description) VALUES (?,?,?,?) RETURNING id").get(b.id, b.user_id, 'service', 'Bus broke down').id;
+  assert.equal((await api('POST', `/api/admin/disputes/${d}/resolve`, { token: tokens.admin, body: { resolution: 'Breakdown refund', refund_amount: 550 } })).status, 200);
+  const ref = db.prepare('SELECT * FROM refunds WHERE reason LIKE ? ORDER BY id DESC').get(`Dispute #${d}:%`);
+  assert.equal(ref.status, 'awaiting_approval');
+  assert.equal((await api('POST', `/api/admin/refunds/${ref.id}`, { token: tokens.admin, body: { status: 'paid' } })).status, 409);
+  assert.equal((await api('POST', `/api/admin/refunds/${ref.id}`, { token: tokens.admin, body: { status: 'approved' } })).status, 403, 'creator cannot approve');
+  assert.equal((await api('POST', `/api/admin/refunds/${ref.id}`, { token: admin2, body: { status: 'approved' } })).status, 200);
+  assert.equal((await api('POST', `/api/admin/refunds/${ref.id}`, { token: admin2, body: { status: 'paid' } })).status, 403, 'approver cannot pay');
+  assert.equal((await api('POST', `/api/admin/refunds/${ref.id}`, { token: tokens.admin, body: { status: 'paid' } })).status, 403, 'creator cannot pay');
+});
+
+test('bank account change waits 48 h with SMS; payouts blocked meanwhile; applied by the sweep', async () => {
+  const before = db.prepare('SELECT bank_account FROM operators WHERE id = 1').get().bank_account;
+  const r = await api('PUT', '/api/operator/profile', { token: tokens.operator, body: { bank_name: 'FNB', bank_account: '62000000001', bank_branch: 'Lusaka' } });
+  assert.equal(r.status, 200);
+  assert.ok(r.body.bank_change);
+  assert.equal(db.prepare('SELECT bank_account FROM operators WHERE id = 1').get().bank_account, before, 'not changed yet');
+  assert.ok(db.prepare("SELECT 1 FROM notifications WHERE kind = 'bank_change' AND body LIKE '%ending 0001%'").get());
+  const blocked = await api('POST', '/api/operator/settlements', { token: tokens.operator, body: { amount: 100 } });
+  assert.equal(blocked.status, 409);
+  db.prepare("UPDATE bank_changes SET effective_at = datetime('now', '-1 minute') WHERE status = 'pending'").run();
+  sweep(db);
+  assert.equal(db.prepare('SELECT bank_account FROM operators WHERE id = 1').get().bank_account, '62000000001');
+  // A change can be cancelled before it takes effect
+  await api('PUT', '/api/operator/profile', { token: tokens.operator, body: { bank_account: '99999999999' } });
+  assert.equal((await api('POST', '/api/operator/bank-change/cancel', { token: tokens.operator })).status, 200);
+  sweep(db);
+  assert.equal(db.prepare('SELECT bank_account FROM operators WHERE id = 1').get().bank_account, '62000000001');
+});

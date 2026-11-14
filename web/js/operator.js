@@ -556,6 +556,8 @@ async function company(main) {
       <label class="field"><span>Contact email</span><input name="contact_email" type="email" value="${p.contact_email || ''}"></label>
       <label class="field"><span>Bank</span><input name="bank_name" value="${p.bank_name || ''}"></label><label class="field"><span>Account number</span><input name="bank_account" value="${p.bank_account || ''}"></label>
       <label class="field"><span>Branch</span><input name="bank_branch" value="${p.bank_branch || ''}"></label></div>
+      ${p.bank_change ? html`<div class="notice"><b>Bank account change waiting:</b> payouts will go to ${p.bank_change.bank_name} account ending ${p.bank_change.bank_account.slice(-4)} from ${p.bank_change.effective_at.slice(0, 16)}. Withdrawals are paused until then. <button type="button" class="btn danger sm" id="cancelbank">Cancel this change</button></div>`
+        : raw('<p class="small muted" style="margin:0">For your protection, a new bank account takes effect 48 hours after you save it, and the owner gets an SMS.</p>')}
       <h3>Cancellation policy</h3><p class="small muted" style="margin:0">Refund percentage of the fare by how early the passenger cancels.</p>
       <div id="tiers" class="page" style="gap:6px">${p.terms.refundPolicy.map((t, i) => html`<div class="row" style="flex-wrap:nowrap"><input name="h${i}" type="number" min="0" value="${t.hours}" style="max-width:110px" aria-label="Hours before"><span class="small muted">hours or more before departure →</span><input name="p${i}" type="number" min="0" max="100" value="${t.pct}" style="max-width:90px" aria-label="Refund percent"><span class="small muted">% refund</span></div>`)}</div>
       <label class="field" style="max-width:220px"><span>Date/time change fee (K)</span><input name="reschedule_fee" type="number" min="0" value="${p.reschedule_fee}"></label>
@@ -569,13 +571,15 @@ async function company(main) {
     try { await api('/operator/documents', { method: 'POST', body: { kind: i.dataset.up, file: await fileToUpload(i.files[0]) } }); toast('Uploaded. The platform team will verify it.'); company(main); } catch (err) { toast(err.message, true); }
   });
   main.addEventListener('click', e => { const d = e.target.closest('[data-doc]'); if (d) { e.preventDefault(); openBlob('/documents/' + d.dataset.doc).catch(err => toast(err.message, true)); } });
+  $('#cancelbank', main)?.addEventListener('click', e => busy(e.target, async () => { await api('/operator/bank-change/cancel', { method: 'POST' }); toast('Bank change cancelled.'); company(main); }));
   const f = $('#pf', main);
-  f.addEventListener('submit', e => { e.preventDefault(); busy(f.querySelector('button'), async () => {
+  f.addEventListener('submit', e => { e.preventDefault(); busy(f.querySelector('button:not(.sm)'), async () => {
     const v = formData(f);
     const refund_policy = p.terms.refundPolicy.map((_, i) => ({ hours: Number(v['h' + i]), pct: Number(v['p' + i]) }));
     const luggage_fees = Object.fromEntries([...KINDS.map(([k]) => k), 'free_bags'].map(k => [k, Number(v['lf_' + k]) || 0]));
-    await api('/operator/profile', { method: 'PUT', body: { ...v, refund_policy, reschedule_fee: Number(v.reschedule_fee), luggage_fees } });
-    toast('Saved.');
+    const r = await api('/operator/profile', { method: 'PUT', body: { ...v, refund_policy, reschedule_fee: Number(v.reschedule_fee), luggage_fees } });
+    toast(r.bank_change ? `Saved. The new bank account takes effect on ${r.bank_change.effective_at.slice(0, 16)}.` : 'Saved.');
+    if (r.bank_change) company(main);
   }); });
 }
 

@@ -310,5 +310,11 @@ export function sweep(db) {
       WHERE tr.status = 'arrived' OR datetime(tr.depart_at, '+' || (r.duration_min + tr.delay_min + 360) || ' minutes') < datetime('now'))`).run();
   awardPoints(db);
   logTripKm(db);
+  // Bank account changes whose waiting period has passed take effect now.
+  for (const c of db.prepare("SELECT * FROM bank_changes WHERE status = 'pending' AND effective_at <= datetime('now')").all()) {
+    db.prepare('UPDATE operators SET bank_name = ?, bank_account = ?, bank_branch = ? WHERE id = ?').run(c.bank_name, c.bank_account, c.bank_branch, c.operator_id);
+    db.prepare("UPDATE bank_changes SET status = 'applied' WHERE id = ?").run(c.id);
+    db.prepare("INSERT INTO audit_log (action, entity, entity_id, detail) VALUES ('bank_change_applied', 'operator', ?, ?)").run(String(c.operator_id), `account ending ${c.bank_account.slice(-4)}`);
+  }
   processWaitlist(db);
 }

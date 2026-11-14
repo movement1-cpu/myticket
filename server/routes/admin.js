@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { tx, setting } from '../db.js';
 import { requireRole, hashPassword } from '../auth.js';
-import { bad, notFound, conflict, required, normPhone, money, localDate, addDays, isDate } from '../util.js';
+import { bad, notFound, conflict, forbidden, required, normPhone, money, localDate, addDays, isDate } from '../util.js';
 import { notifyContact, queue } from '../services/notify.js';
 import { balance } from './operator.js';
 
@@ -46,6 +46,7 @@ export default function adminRoutes(db) {
   r.get('/admin/settings', admin, (_req, res) => {
     res.json({ booking_fee: Number(setting(db, 'booking_fee')), commission_pct: Number(setting(db, 'commission_pct')), hold_minutes: Number(setting(db, 'hold_minutes')),
       reserve_minutes: Number(setting(db, 'reserve_minutes')), refund_policy: JSON.parse(setting(db, 'refund_policy')),
+      refund_approval_threshold: Number(setting(db, 'refund_approval_threshold')), mfa_operator_required: setting(db, 'mfa_operator_required') === '1',
       reminder_hours: Number(setting(db, 'reminder_hours')), waitlist_offer_minutes: Number(setting(db, 'waitlist_offer_minutes')),
       loyalty_points_per_kwacha: Number(setting(db, 'loyalty_points_per_kwacha')), loyalty_point_value: Number(setting(db, 'loyalty_point_value')), loyalty_max_pct: Number(setting(db, 'loyalty_max_pct')) });
   });
@@ -53,7 +54,8 @@ export default function adminRoutes(db) {
     const b = req.body, up = db.prepare('UPDATE settings SET value = ? WHERE key = ?');
     const num = (k, min, max) => { if (b[k] === undefined) return; const v = Number(b[k]); if (!(v >= min && v <= max)) throw bad(`${k.replace(/_/g, ' ')} must be between ${min} and ${max}.`); up.run(String(v), k); };
     tx(db, () => { num('booking_fee', 0, 500); num('commission_pct', 0, 30); num('hold_minutes', 5, 15); num('reserve_minutes', 10, 120);
-      num('reminder_hours', 0, 24); num('waitlist_offer_minutes', 10, 120);
+      num('reminder_hours', 0, 24); num('refund_approval_threshold', 0, 100000);
+      if (b.mfa_operator_required !== undefined) up.run(b.mfa_operator_required ? '1' : '0', 'mfa_operator_required'); num('waitlist_offer_minutes', 10, 120);
       num('loyalty_points_per_kwacha', 0, 1); num('loyalty_point_value', 0, 1); num('loyalty_max_pct', 0, 100); });
     audit(req, 'settings', 'settings', '-', JSON.stringify(b));
     res.json({ ok: true });
@@ -87,7 +89,10 @@ export default function adminRoutes(db) {
         const b = db.prepare('SELECT total FROM bookings WHERE id = ?').get(d.booking_id);
         const already = db.prepare('SELECT COALESCE(SUM(amount),0) v FROM refunds WHERE booking_id = ?').get(d.booking_id).v;
         if (amount + already > b.total + 0.001) throw bad(`Refunds cannot exceed what was paid (K${b.total.toFixed(2)}, already refunded K${already.toFixed(2)}).`);
-        db.prepare('INSERT INTO refunds (booking_id, amount, reason) VALUES (?,?,?)').run(d.booking_id, amount, `Dispute #${d.id}: ${req.body.resolution}`);
+        // Above the threshold, a second admin must approve before the money goes out.
+        const needsApproval = amount > Number(setting(db, 'refund_approval_threshold'));
+        db.prepare('INSERT INTO refunds (booking_id, amount, reason, status, created_by) VALUES (?,?,?,?,?)')
+          .run(d.booking_id, amount, `Dispute #${d.id}: ${req.body.resolution}`, needsApproval ? 'awaiting_approval' : 'pending', req.user.id);
       }
       db.prepare("UPDATE disputes SET status = ?, resolution = ?, refund_amount = ?, resolved_at = datetime('now') WHERE id = ?").run(status, req.body.resolution, amount || null, d.id);
     });
@@ -102,30 +107,76 @@ export default function adminRoutes(db) {
       FROM payments p WHERE (? = 'all' OR p.status = ?) ORDER BY p.id DESC LIMIT 200`).all(req.query.status || 'failed', req.query.status || 'failed'));
   });
   r.get('/admin/refunds', admin, (req, res) => {
-    res.json(db.prepare(`SELECT r.*, b.ref, b.payment_method, b.contact_phone, o.name operator FROM refunds r JOIN bookings b ON b.id = r.booking_id JOIN operators o ON o.id = b.operator_id
-      WHERE (? = 'all' OR r.status = ?) ORDER BY r.id DESC LIMIT 200`).all(req.query.status || 'pending', req.query.status || 'pending'));
+    const st = req.query.status || 'open';
+    res.json(db.prepare(`SELECT r.*, b.ref, b.payment_method, b.contact_phone, o.name operator, uc.name created_by_name, ua.name approved_by_name FROM refunds r
+      JOIN bookings b ON b.id = r.booking_id JOIN operators o ON o.id = b.operator_id LEFT JOIN users uc ON uc.id = r.created_by LEFT JOIN users ua ON ua.id = r.approved_by
+      WHERE (? = 'all' OR (? = 'open' AND r.status IN ('awaiting_approval','pending')) OR r.status = ?) ORDER BY r.status = 'awaiting_approval' DESC, r.id DESC LIMIT 200`).all(st, st, st));
   });
   /** Mark a refund as paid out (the actual disbursement happens in the provider's portal or a payout API). */
+  /**
+   * Refund workflow (maker-checker):
+   *   awaiting_approval --approve (not the admin who created it)--> pending --paid/failed (not the creator or approver)--> done
+   * Refunds the system calculated (cancellation policy, cancelled trips) start at pending.
+   */
   r.post('/admin/refunds/:id', admin, (req, res) => {
     const st = req.body.status;
-    if (!['paid', 'failed'].includes(st)) throw bad('Mark the refund paid or failed.');
-    const row = db.prepare("UPDATE refunds SET status = ? WHERE id = ? AND status = 'pending' RETURNING id").get(st, req.params.id);
-    if (!row) throw conflict('This refund is already processed.');
-    audit(req, `refund_${st}`, 'refund', row.id);
+    const ref = db.prepare('SELECT * FROM refunds WHERE id = ?').get(req.params.id);
+    if (!ref) throw notFound();
+    const me = req.user.id;
+    if (st === 'approved') {
+      if (ref.status !== 'awaiting_approval') throw conflict('This refund does not need approval.');
+      if (ref.created_by === me) throw forbidden('You created this refund. Another admin must approve it.');
+      db.prepare("UPDATE refunds SET status = 'pending', approved_by = ?, approved_at = datetime('now') WHERE id = ?").run(me, ref.id);
+    } else if (['paid', 'failed'].includes(st)) {
+      if (ref.status !== 'pending') throw conflict(ref.status === 'awaiting_approval' ? 'A second admin must approve this refund first.' : 'This refund is already processed.');
+      if (st === 'paid' && (ref.created_by === me || ref.approved_by === me)) throw forbidden('You created or approved this refund. Another admin must confirm the payout.');
+      db.prepare("UPDATE refunds SET status = ?, paid_by = ?, paid_at = datetime('now') WHERE id = ?").run(st, me, ref.id);
+    } else throw bad('Approve the refund, or mark it paid or failed.');
+    audit(req, `refund_${st}`, 'refund', ref.id, `K${ref.amount}`);
     res.json({ ok: true });
   });
 
-  /* ---------- settlements ---------- */
+  /* ---------- settlements: requested → approved (admin A) → paid (admin B) ---------- */
   r.get('/admin/settlements', admin, (_req, res) => {
-    res.json(db.prepare(`SELECT s.*, o.name operator FROM settlements s JOIN operators o ON o.id = s.operator_id ORDER BY s.status = 'requested' DESC, s.id DESC LIMIT 200`).all()
-      .map(s => ({ ...s, balance: s.status === 'requested' ? balance(db, s.operator_id) : null })));
+    res.json(db.prepare(`SELECT s.*, o.name operator, ua.name approved_by_name, up.name paid_by_name,
+        (SELECT MAX(requested_at) FROM bank_changes bc WHERE bc.operator_id = s.operator_id AND bc.status = 'applied') bank_changed_at,
+        (SELECT COUNT(*) FROM bank_changes bc WHERE bc.operator_id = s.operator_id AND bc.status = 'pending') bank_change_pending
+      FROM settlements s JOIN operators o ON o.id = s.operator_id LEFT JOIN users ua ON ua.id = s.approved_by LEFT JOIN users up ON up.id = s.paid_by
+      ORDER BY s.status IN ('requested','approved') DESC, s.id DESC LIMIT 200`).all()
+      .map(s => ({ ...s, balance: ['requested', 'approved'].includes(s.status) ? balance(db, s.operator_id) : null })));
   });
   r.post('/admin/settlements/:id', admin, (req, res) => {
     const st = req.body.status;
-    if (!['paid', 'rejected'].includes(st)) throw bad('Mark the payout paid or rejected.');
-    const row = db.prepare("UPDATE settlements SET status = ?, note = ?, processed_at = datetime('now') WHERE id = ? AND status = 'requested' RETURNING *").get(st, req.body.note || null, req.params.id);
-    if (!row) throw conflict('This payout is already processed.');
-    audit(req, `settlement_${st}`, 'settlement', row.id, req.body.note);
+    const s = db.prepare('SELECT * FROM settlements WHERE id = ?').get(req.params.id);
+    if (!s) throw notFound();
+    const me = req.user.id;
+    if (st === 'approved') {
+      if (s.status !== 'requested') throw conflict('Only new payout requests can be approved.');
+      if (db.prepare("SELECT 1 FROM bank_changes WHERE operator_id = ? AND status = 'pending'").get(s.operator_id)) throw conflict('This company has a bank account change waiting. Approve payouts after it takes effect.');
+      db.prepare("UPDATE settlements SET status = 'approved', approved_by = ?, approved_at = datetime('now') WHERE id = ?").run(me, s.id);
+    } else if (st === 'paid') {
+      if (s.status !== 'approved') throw conflict(s.status === 'requested' ? 'One admin must approve this payout before another marks it paid.' : 'This payout is already processed.');
+      if (s.approved_by === me) throw forbidden('You approved this payout. A different admin must make the transfer and mark it paid.');
+      if (!req.body.note) throw bad('Enter the bank transfer reference.');
+      db.prepare("UPDATE settlements SET status = 'paid', paid_by = ?, note = ?, processed_at = datetime('now') WHERE id = ?").run(me, req.body.note, s.id);
+    } else if (st === 'rejected') {
+      if (!['requested', 'approved'].includes(s.status)) throw conflict('This payout is already processed.');
+      if (!req.body.note) throw bad('Give a reason. The company sees it.');
+      db.prepare("UPDATE settlements SET status = 'rejected', note = ?, processed_at = datetime('now') WHERE id = ?").run(req.body.note, s.id);
+    } else throw bad('Approve, mark paid or reject the payout.');
+    audit(req, `settlement_${st}`, 'settlement', s.id, `K${s.amount} ${req.body.note || ''}`.trim());
+    res.json({ ok: true });
+  });
+
+  /* ---------- bank account changes ---------- */
+  r.get('/admin/bank-changes', admin, (_req, res) => {
+    res.json(db.prepare(`SELECT bc.*, o.name operator, o.bank_name cur_bank, o.bank_account cur_account, u.name requested_by_name FROM bank_changes bc
+      JOIN operators o ON o.id = bc.operator_id LEFT JOIN users u ON u.id = bc.requested_by ORDER BY bc.status = 'pending' DESC, bc.id DESC LIMIT 100`).all());
+  });
+  r.post('/admin/bank-changes/:id/cancel', admin, (req, res) => {
+    const row = db.prepare("UPDATE bank_changes SET status = 'cancelled', cancelled_by = ? WHERE id = ? AND status = 'pending' RETURNING *").get(req.user.id, req.params.id);
+    if (!row) throw conflict('This change is not pending.');
+    audit(req, 'bank_change_cancelled', 'operator', row.operator_id, req.body.note);
     res.json({ ok: true });
   });
 

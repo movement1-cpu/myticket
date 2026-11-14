@@ -2,7 +2,7 @@ import { Router } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { tx } from '../db.js';
+import { tx, setting } from '../db.js';
 import { config } from '../config.js';
 import { requireRole, requireApprovedOperator, hashPassword } from '../auth.js';
 import { bad, notFound, conflict, forbidden, required, normPhone, isDate, isTime, ref, money, localDate, localTime, addDays } from '../util.js';
@@ -10,7 +10,7 @@ import { ensureTrips, routeStops } from '../services/trips.js';
 import { createBookings, settleAtCounter, cancelBooking, groupBookings } from '../services/bookings.js';
 import { operatorTerms, DEFAULT_LUGGAGE_FEES } from '../services/pricing.js';
 import { dueItems, tripBlockers } from '../services/maintenance.js';
-import { notifyContact } from '../services/notify.js';
+import { notifyContact, queue } from '../services/notify.js';
 import { ticketData, qrSvg } from '../services/tickets.js';
 import { luggageOf, LUGGAGE_KINDS } from '../services/luggage.js';
 
@@ -75,7 +75,8 @@ export default function operatorRoutes(db) {
   r.get('/operator/profile', requireRole('operator', 'clerk', 'conductor'), (req, res) => {
     const o = db.prepare('SELECT * FROM operators WHERE id = ?').get(req.operatorId);
     const docs = db.prepare("SELECT id, kind, filename, status, expires_on, uploaded_at FROM documents WHERE operator_id = ? AND owner_type = 'operator' ORDER BY id DESC").all(req.operatorId);
-    res.json({ ...o, terms: operatorTerms(db, req.operatorId), documents: docs, amenities: AMENITIES, classes: CLASSES });
+    const bank_change = db.prepare("SELECT bank_name, bank_account, bank_branch, effective_at, requested_at FROM bank_changes WHERE operator_id = ? AND status = 'pending'").get(req.operatorId) || null;
+    res.json({ ...o, terms: operatorTerms(db, req.operatorId), documents: docs, amenities: AMENITIES, classes: CLASSES, bank_change });
   });
   r.put('/operator/profile', ...owner, (req, res) => {
     const b = req.body;
@@ -83,12 +84,36 @@ export default function operatorRoutes(db) {
       const p = b.refund_policy;
       if (!Array.isArray(p) || !p.every(t => t.hours >= 0 && t.pct >= 0 && t.pct <= 100)) throw bad('Refund tiers need hours ≥ 0 and a percentage between 0 and 100.');
     }
-    db.prepare(`UPDATE operators SET contact_phone = COALESCE(?, contact_phone), contact_email = COALESCE(?, contact_email), bank_name = COALESCE(?, bank_name),
-      bank_account = COALESCE(?, bank_account), bank_branch = COALESCE(?, bank_branch), pacra_no = COALESCE(?, pacra_no), tpin = COALESCE(?, tpin),
+    db.prepare(`UPDATE operators SET contact_email = COALESCE(?, contact_email), pacra_no = COALESCE(?, pacra_no), tpin = COALESCE(?, tpin),
       refund_policy = COALESCE(?, refund_policy), reschedule_fee = COALESCE(?, reschedule_fee), luggage_fees = COALESCE(?, luggage_fees), dynamic_pricing = COALESCE(?, dynamic_pricing) WHERE id = ?`)
-      .run(b.contact_phone ?? null, b.contact_email ?? null, b.bank_name ?? null, b.bank_account ?? null, b.bank_branch ?? null, b.pacra_no ?? null, b.tpin ?? null,
+      .run(b.contact_email ?? null, b.pacra_no ?? null, b.tpin ?? null,
         b.refund_policy ? JSON.stringify([...b.refund_policy].sort((x, y) => y.hours - x.hours)) : null, b.reschedule_fee ?? null, luggageFeesBody(b.luggage_fees), dynamicBody(b.dynamic_pricing), req.operatorId);
-    audit(req, 'update', 'operator', req.operatorId);
+    // Bank details never change straight away (payout hijacking): the new account is used after a wait, and the owner is told by SMS.
+    let bank_change = null;
+    const o = db.prepare('SELECT * FROM operators WHERE id = ?').get(req.operatorId);
+    const nb = { name: (b.bank_name ?? o.bank_name ?? '').trim(), account: (b.bank_account ?? o.bank_account ?? '').replace(/\s/g, ''), branch: (b.bank_branch ?? o.bank_branch ?? '').trim() };
+    if ((b.bank_name !== undefined || b.bank_account !== undefined || b.bank_branch !== undefined) && (nb.name !== (o.bank_name || '') || nb.account !== (o.bank_account || '') || nb.branch !== (o.bank_branch || ''))) {
+      if (!nb.name || !/^\d{6,20}$/.test(nb.account)) throw bad('Enter the bank name and an account number of 6 to 20 digits.');
+      if (!o.bank_account) {
+        db.prepare('UPDATE operators SET bank_name = ?, bank_account = ?, bank_branch = ? WHERE id = ?').run(nb.name, nb.account, nb.branch || null, o.id); // first time: nothing to hijack
+      } else {
+        const hours = Number(setting(db, 'bank_change_hours'));
+        db.prepare("UPDATE bank_changes SET status = 'cancelled', cancelled_by = ? WHERE operator_id = ? AND status = 'pending'").run(req.user.id, o.id);
+        bank_change = db.prepare("INSERT INTO bank_changes (operator_id, bank_name, bank_account, bank_branch, requested_by, effective_at) VALUES (?,?,?,?,?, datetime('now', ?)) RETURNING *")
+          .get(o.id, nb.name, nb.account, nb.branch || null, req.user.id, `+${hours} hours`);
+        const owners = db.prepare("SELECT phone FROM users WHERE operator_id = ? AND role = 'operator' AND active = 1").all(o.id).map(u => u.phone);
+        for (const ph of new Set([...owners, o.contact_phone].filter(Boolean))) {
+          queue(db, { channel: 'sms', to: ph, kind: 'bank_change', body: `MyTicket ${o.name}: payouts will go to ${nb.name} account ending ${nb.account.slice(-4)} from ${bank_change.effective_at.slice(0, 16)}. If you did not ask for this, cancel it in Company & verification and contact MyTicket now.` });
+        }
+      }
+    }
+    audit(req, 'update', 'operator', req.operatorId, bank_change ? `bank change requested, effective ${bank_change.effective_at}` : null);
+    res.json({ ok: true, bank_change });
+  });
+  r.post('/operator/bank-change/cancel', ...owner, (req, res) => {
+    const row = db.prepare("UPDATE bank_changes SET status = 'cancelled', cancelled_by = ? WHERE operator_id = ? AND status = 'pending' RETURNING id").get(req.user.id, req.operatorId);
+    if (!row) throw conflict('There is no pending bank change.');
+    audit(req, 'bank_change_cancelled', 'operator', req.operatorId);
     res.json({ ok: true });
   });
   r.post('/operator/documents', ...owner, (req, res) => {
@@ -423,11 +448,12 @@ export default function operatorRoutes(db) {
   r.post('/operator/settlements', ...ownerOps, (req, res) => {
     const o = db.prepare('SELECT * FROM operators WHERE id = ?').get(req.operatorId);
     if (!o.bank_account) throw bad('Add your company bank account in Company profile before withdrawing.');
+    if (db.prepare("SELECT 1 FROM bank_changes WHERE operator_id = ? AND status = 'pending'").get(o.id)) throw conflict('Your bank account change has not taken effect yet. You can withdraw once it has.');
     const bal = balance(db, req.operatorId);
     const amount = money(Number(req.body.amount));
     if (!(amount >= 100)) throw bad('The minimum withdrawal is K100.');
     if (amount > bal.available) throw bad(`You can withdraw up to K${bal.available.toFixed(2)} right now.`);
-    res.status(201).json(db.prepare('INSERT INTO settlements (operator_id, amount, bank_snapshot) VALUES (?,?,?) RETURNING *').get(req.operatorId, amount, `${o.bank_name} ${o.bank_account} ${o.bank_branch || ''}`.trim()));
+    res.status(201).json(db.prepare('INSERT INTO settlements (operator_id, amount, bank_snapshot, requested_by) VALUES (?,?,?,?) RETURNING *').get(req.operatorId, amount, `${o.bank_name} ${o.bank_account} ${o.bank_branch || ''}`.trim(), req.user.id));
   });
 
   return r;
