@@ -1031,3 +1031,43 @@ test('security headers and error responses', async () => {
   // Uploaded files cannot be fetched without the right session
   assert.equal((await api('GET', '/api/documents/1')).status, 401);
 });
+
+/* ---------------- Security step 12: passenger safety ---------------- */
+test('share my trip: family link shows the bus but no passenger details; can be stopped; guests share via ticket key', async () => {
+  tokens.passenger = await login('0971234567'); // an earlier test signed this passenger out everywhere
+  // Earlier tests cancelled or moved her trips: give her an upcoming paid one.
+  const nat = db.prepare("SELECT id FROM users WHERE phone = '260971234567'").get().id;
+  db.prepare(`UPDATE bookings SET user_id = ? WHERE id = (SELECT b.id FROM bookings b JOIN trips t ON t.id = b.trip_id WHERE b.status = 'confirmed' AND t.depart_at > ? AND b.user_id IS NULL LIMIT 1)`).run(nat, new Date(Date.now() + 864e5).toISOString());
+  const mine = (await api('GET', '/api/my/bookings', { token: tokens.passenger })).body.find(b => b.status === 'confirmed' && b.upcoming);
+  const sh = await api('POST', `/api/my/bookings/${mine.ref}/share`, { token: tokens.passenger });
+  assert.equal(sh.status, 200, JSON.stringify(sh.body));
+  const token = sh.body.url.split('s=')[1];
+  const view = await api('GET', `/api/shared/${token}`);
+  assert.equal(view.status, 200);
+  assert.ok(view.body.position && view.body.stops.length);
+  const text = JSON.stringify(view.body);
+  assert.ok(!text.includes('Natasha') && !/\d{6}\//.test(text) && !text.includes(mine.ref), 'no names, IDs or booking reference');
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM trip_shares WHERE token_hash = ?').get(token).n, 0, 'only a hash of the link is stored');
+  await api('DELETE', `/api/my/bookings/${mine.ref}/share`, { token: tokens.passenger });
+  assert.equal((await api('GET', `/api/shared/${token}`)).status, 404, 'stopped links stop working');
+  const t = db.prepare("SELECT b.ref FROM bookings b JOIN trips tr ON tr.id = b.trip_id WHERE b.status = 'confirmed' AND b.user_id IS NULL AND tr.depart_at > ? LIMIT 1").get(new Date().toISOString());
+  const { ticketKey } = await import('../server/services/tickets.js');
+  assert.equal((await api('POST', `/api/tickets/${t.ref}/share?k=wrong`)).status, 403);
+  assert.equal((await api('POST', `/api/tickets/${t.ref}/share?k=${ticketKey(t.ref)}`)).status, 200);
+});
+
+test('SOS from the bus alerts the company and platform with the location; shown until resolved', async () => {
+  const trip = db.prepare('SELECT id FROM trips WHERE operator_id = 1 LIMIT 1').get();
+  const r = await api('POST', `/api/agent/trips/${trip.id}/sos`, { token: tokens.conductor, body: { kind: 'breakdown', note: 'Tyre burst near Kabwe', lat: -14.44, lng: 28.45 } });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  assert.ok(r.body.alerted >= 2);
+  const sms = db.prepare("SELECT recipient, body FROM notifications WHERE kind = 'sos' AND channel = 'sms'").all();
+  assert.ok(sms.some(n => n.recipient === '260960000099'), 'company emergency line alerted');
+  assert.ok(sms.some(n => n.recipient === '260950000001'), 'platform admin alerted');
+  assert.match(sms[0].body, /google\.com\/maps\?q=-14\.44,28\.45/);
+  const open = (await api('GET', '/api/operator/incidents', { token: tokens.operator })).body;
+  assert.equal(open[0].status, 'open');
+  assert.equal((await api('POST', `/api/operator/incidents/${open[0].id}/resolve`, { token: tokens.clerk, body: { resolution: 'x' } })).status, 403);
+  assert.equal((await api('POST', `/api/operator/incidents/${open[0].id}/resolve`, { token: tokens.operator, body: { resolution: 'Spare fitted, bus moving' } })).status, 200);
+  assert.equal((await api('POST', `/api/agent/trips/${trip.id}/sos`, { token: tokens.conductor, body: { kind: 'party' } })).status, 400);
+});

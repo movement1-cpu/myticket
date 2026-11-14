@@ -27,9 +27,11 @@ Open http://localhost:3000. An empty development database is filled with demo da
 |---|---|
 | Passenger | 0971234567 |
 | Bus owner (Zambezi Coaches) | 0960000002 |
-| Station clerk | 0960000003 |
+| Station clerk (Lusaka station) | 0960000003 |
 | Conductor | 0970000004 |
-| Platform admin | 0950000001 |
+| Platform admin (full; second step uses the SMS code shown on screen in development) | 0950000001 |
+| Finance admin (second approver for payouts) | 0950000002 |
+| Support admin | 0950000003 |
 | Owner awaiting approval (Luangwa Liner) | 0960000020 |
 
 Company names in the demo data are fictional. Reset the demo database with `npm run seed:demo`.
@@ -113,6 +115,32 @@ npm test
 **Languages**
 - The passenger website, SMS messages and the USSD menu are available in English, Ichibemba, Chinyanja and Chitonga. The choice is remembered on the account, on the booking (so trip alerts arrive in the same language) and per phone number for USSD.
 - **The Bemba, Nyanja and Tonga texts are draft translations. Have native speakers review `web/js/i18n.js` and `server/i18n.js` before launch.** Staff and admin screens are English only.
+
+## Security
+
+Security is built into how each feature works.
+
+| # | What | How it works |
+|---|---|---|
+| 1 | Accounts | Phone numbers are confirmed by a 6-digit SMS code (5 minutes, 3 tries, single use, stored hashed). Password reset by SMS code never reveals whether a number has an account. A reset signs out every device and sends an SMS. Earlier guest bookings join an account only after its phone is confirmed. Limits on sign-in, codes and lookups are stored in the database, so a restart doesn't reset them. |
+| 2 | Sign-in | Sessions are random tokens; only their SHA-256 hash is stored. Browsers keep the session in an HttpOnly, SameSite=Strict cookie, so scripts can't read it. Changes need an `X-MT-CSRF` header. Staff sessions end after 12 hours idle. Two-step sign-in uses an authenticator app (secret encrypted), an SMS code, or single-use recovery codes. It is always required for admins, and the platform can require it for company owners. New devices trigger an SMS alert. Every account has a list of signed-in devices, sign-out of one device, and sign-out everywhere. |
+| 3 | Money | A payout needs one admin to approve and a **different** admin to mark it paid. Refunds an admin decides above a limit (default K500) need a second admin, and nobody can mark paid a refund they created or approved. A new company bank account takes effect after **48 hours**, with an SMS to the owners, and payouts are paused meanwhile. |
+| 4 | Personal data | NRC and passport numbers are encrypted at rest (AES-256-GCM with `DATA_KEY`). Screens, tickets and phones show a masked hint (`****54/32/1`). Full numbers appear only on the official manifest, and each viewing is logged. They are erased 30 days after the trip (adjustable). Passengers can download their data or delete their account. |
+| 5 | Cash | Counter staff work in cash shifts with a counted float. Every cash movement goes into an append-only ledger (database triggers block edits and deletes). At close, counted cash is compared with expected cash, and a difference over K50 alerts the owner. Voids need the owner's supervisor PIN and a reason, and 3 voids in a shift trigger an alert. |
+| 6 | Field app | Each staff member sets an app PIN. Manifests and the offline scan queue are encrypted on the phone with a key derived from the PIN (PBKDF2 + AES-GCM). The app locks after 5 minutes idle or 2 minutes in the background. 5 wrong PINs, or a remote "sign out all devices" by the owner, erase the phone's copy. |
+| 7 | Abuse | One network can hold at most 12 seats at once. A phone number can have at most 3 unpaid bookings and 6 bookings an hour. Promo codes can have per-phone limits (cancelled or rescheduled bookings still count as a use). Payment prompts and waitlist entries are limited too. |
+| 8 | Double charges | Booking, payment, counter sale, void, reschedule and payout requests take an `Idempotency-Key`. A repeat with the same key gets the first answer back instead of a second booking or charge. |
+| 9 | Audit | Each audit entry is chained to the previous one with an HMAC, and triggers refuse edits and deletes. **Admin → Audit log → Verify** names the first entry that was altered. |
+| 10 | Roles | Admins are *full*, *finance* or *support*, and every admin endpoint checks the scope. Clerks can be tied to their station's town. Company staff are always limited to their own company. |
+| 11 | CI | Tests, a dependency audit (fails on high or critical issues), CodeQL code scanning, and Dependabot updates run on GitHub. Response headers are strict (CSP with `frame-ancestors 'none'`, HSTS on https, nosniff, no `X-Powered-By`). |
+| 12 | Safety | **Share my trip** gives family a link showing where the bus is, with no passenger details. It ends 2 hours after arrival and can be stopped. **SOS** in the field app texts the company's emergency line, the owners and the platform admins with the bus's location, and stays on the dashboards until resolved. Each company sets a 24-hour emergency number, shown on tickets. |
+
+**Before going live:**
+- Set long random `APP_SECRET` and `DATA_KEY` values, kept in a password manager. **Back up `DATA_KEY` separately from the database**, because encrypted ID numbers can't be read without it. Don't change `APP_SECRET` casually: it keys the audit chain and ticket QR codes.
+- Have at least **two full admins**, each with an authenticator app, so payouts can be approved by one person and paid by another.
+- Each company owner sets a supervisor PIN (Cash & shifts) and a 24-hour emergency number (Company & verification).
+- Review open findings under GitHub → Security (CodeQL, Dependabot).
+- Write down the audit log's latest hash now and then, somewhere outside the system.
 
 ## How the important parts work
 

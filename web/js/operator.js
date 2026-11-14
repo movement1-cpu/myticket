@@ -40,11 +40,21 @@ export async function render(app, section, arg) {
 
 /* ---------- dashboard ---------- */
 async function dashboard(main) {
-  const [fin, trips, maint] = await Promise.all([api('/operator/finance?days=30'), api('/operator/trips?date=' + today()), api('/operator/maintenance')]);
+  main.onclick = e => { // one handler, replaced on every redraw
+    const b = e.target.closest('[data-resolve]'); if (!b) return;
+    const m = modal(html`<h2>Resolve SOS</h2><form id="rf" class="page" style="gap:10px"><label class="field"><span>What was done?</span><input name="resolution" required maxlength="500"></label>
+      <div class="row" style="justify-content:flex-end"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn">Mark resolved</button></div></form>`);
+    const f = $('#rf', m.el);
+    f.addEventListener('submit', ev => { ev.preventDefault(); busy(f.querySelector('.btn:not(.ghost)'), async () => { await api(`/operator/incidents/${b.dataset.resolve}/resolve`, { method: 'POST', body: formData(f) }); m.close(); dashboard(main); }); });
+  };
+  const [fin, trips, maint, incidents] = await Promise.all([api('/operator/finance?days=30'), api('/operator/trips?date=' + today()), api('/operator/maintenance'), api('/operator/incidents')]);
+  const sosOpen = incidents.filter(i => i.status === 'open');
   const urgent = maint.due.filter(d => d.severity !== 'missing');
   const sold = trips.reduce((a, t) => a + t.booked, 0), cap = trips.reduce((a, t) => a + t.capacity, 0);
   const gross = fin.daily.reduce((a, d) => a + d.gross, 0), net = fin.daily.reduce((a, d) => a + d.gross - d.commission, 0);
   main.innerHTML = html`<div class="head"><h1>Today, ${dayOf(today())}</h1><a class="btn" href="#/op/counter">Sell a ticket</a></div>
+    ${sosOpen.map(i => html`<div class="notice bad"><b>SOS · ${i.kind}</b> on bus ${i.plate} (${i.route}) at ${i.created_at.slice(11, 16)}, reported by ${i.reported_by_name}. ${i.note || ''}
+      ${i.lat ? html` <a href="https://www.google.com/maps?q=${i.lat},${i.lng}" target="_blank" rel="noopener">Open location</a>` : ''} <button class="btn sm" data-resolve="${i.id}">Mark resolved</button></div>`)}
     ${urgent.length ? html`<a class="notice ${urgent.some(d => d.severity === 'overdue') ? 'bad' : ''}" href="#/op/maintenance" style="color:inherit;text-decoration:none;display:block"><b>Maintenance: ${urgent.length} item${urgent.length > 1 ? 's' : ''} need attention.</b> ${urgent.slice(0, 3).map(d => d.text).join(' · ')}${urgent.length > 3 ? ' …' : ''}</a>` : ''}
     <div class="kpis">
       <div class="kpi"><span class="label">Departures today</span><b>${trips.length}</b><span class="small muted">${trips.filter(t => t.status === 'departed').length} on the road</span></div>
@@ -637,6 +647,7 @@ async function company(main) {
     <form class="card" id="pf"><h3>Company details & bank account</h3><div class="grid3">
       <label class="field"><span>PACRA no.</span><input name="pacra_no" value="${p.pacra_no || ''}"></label><label class="field"><span>ZRA TPIN</span><input name="tpin" value="${p.tpin || ''}"></label>
       <label class="field"><span>Contact email</span><input name="contact_email" type="email" value="${p.contact_email || ''}"></label>
+      <label class="field"><span>24-hour emergency line (shown to passengers; gets SOS alerts)</span><input name="emergency_phone" inputmode="tel" value="${p.emergency_phone ? '0' + p.emergency_phone.slice(3) : ''}"></label>
       <label class="field"><span>Bank</span><input name="bank_name" value="${p.bank_name || ''}"></label><label class="field"><span>Account number</span><input name="bank_account" value="${p.bank_account || ''}"></label>
       <label class="field"><span>Branch</span><input name="bank_branch" value="${p.bank_branch || ''}"></label></div>
       ${p.bank_change ? html`<div class="notice"><b>Bank account change waiting:</b> payouts will go to ${p.bank_change.bank_name} account ending ${p.bank_change.bank_account.slice(-4)} from ${p.bank_change.effective_at.slice(0, 16)}. Withdrawals are paused until then. <button type="button" class="btn danger sm" id="cancelbank">Cancel this change</button></div>`

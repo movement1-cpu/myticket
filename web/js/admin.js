@@ -17,9 +17,11 @@ export async function render(app, section) {
 }
 
 async function overview(main, days = 30) {
-  const a = await api('/admin/analytics?days=' + days);
+  const [a, inc] = await Promise.all([api('/admin/analytics?days=' + days), api('/admin/incidents').catch(() => [])]);
+  const sos = inc.filter(i => i.status === 'open');
   const t = a.totals;
   main.innerHTML = html`<div class="head"><h1>Platform overview</h1><select id="days" style="width:auto">${[7, 30, 90, 365].map(d => html`<option value="${d}" ${d === days ? 'selected' : ''}>Last ${d} days</option>`)}</select></div>
+    ${sos.map(i => html`<div class="notice bad"><b>SOS · ${i.kind}</b>: ${i.operator}, bus ${i.plate} (${i.route}) at ${i.created_at.slice(11, 16)}. ${i.note || ''} ${i.lat ? html`<a href="https://www.google.com/maps?q=${i.lat},${i.lng}" target="_blank" rel="noopener">Location</a>` : ''}</div>`)}
     ${a.pending_operators || a.open_disputes ? html`<div class="notice">${a.pending_operators ? html`<a href="#/admin/operators">${a.pending_operators} bus compan${a.pending_operators > 1 ? 'ies' : 'y'} waiting for approval</a>. ` : ''}${a.open_disputes ? html`<a href="#/admin/disputes">${a.open_disputes} open complaint${a.open_disputes > 1 ? 's' : ''}</a>.` : ''}</div>` : ''}
     <div class="kpis">
       <div class="kpi"><span class="label">Gross merchandise value</span><b>${kw0(t.gmv)}</b><span class="small muted">paid by passengers</span></div>

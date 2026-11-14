@@ -18,7 +18,7 @@ export const validKey = (ref, k) => !!k && safeEqual(k, ticketKey(ref));
 
 export function ticketData(db, ref) {
   const b = db.prepare(`SELECT b.*, tr.depart_at, tr.status AS trip_status, tr.delay_min, tr.service_date, bu.plate, bu.class,
-      o.name AS operator_name, o.contact_phone AS operator_phone,
+      o.name AS operator_name, o.contact_phone AS operator_phone, o.emergency_phone AS operator_emergency_phone,
       fs.offset_min AS from_offset, ft.city AS from_city, ft.name AS from_terminal, ft.lat AS from_lat, ft.lng AS from_lng,
       ts.offset_min AS to_offset, tt.city AS to_city, tt.name AS to_terminal
     FROM bookings b JOIN trips tr ON tr.id = b.trip_id JOIN buses bu ON bu.id = tr.bus_id JOIN operators o ON o.id = b.operator_id

@@ -384,6 +384,26 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
   PRIMARY KEY (key, scope, endpoint)
 );
 
+-- Passenger safety: live-location links for family, and SOS incidents from the bus.
+CREATE TABLE IF NOT EXISTS trip_shares (
+  id INTEGER PRIMARY KEY,
+  booking_id INTEGER NOT NULL REFERENCES bookings(id),
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at TEXT NOT NULL, revoked_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS incidents (
+  id INTEGER PRIMARY KEY,
+  trip_id INTEGER NOT NULL REFERENCES trips(id),
+  operator_id INTEGER NOT NULL REFERENCES operators(id),
+  reported_by INTEGER REFERENCES users(id),
+  kind TEXT NOT NULL CHECK (kind IN ('accident','breakdown','medical','security','other')),
+  note TEXT, lat REAL, lng REAL,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved')),
+  resolved_by INTEGER REFERENCES users(id), resolution TEXT, resolved_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Cash accountability at station counters.
 CREATE TABLE IF NOT EXISTS cash_shifts (
   id INTEGER PRIMARY KEY,
@@ -502,7 +522,8 @@ function migrate(db) {
   add('users', 'pin_hash', 'TEXT');
   add('seat_holds', 'ip', 'TEXT');                     // anti-hoarding: seats held per network
   add('pricing_rules', 'per_phone_limit', 'INTEGER');
-  add('staff', 'station_city', 'TEXT'); // clerks: the town of the station they sell at (NULL = any)
+  add('staff', 'station_city', 'TEXT');
+  add('operators', 'emergency_phone', 'TEXT'); // shown to passengers; SOS alerts also go here // clerks: the town of the station they sell at (NULL = any)
   add('audit_log', 'prev_hash', 'TEXT');
   add('audit_log', 'hash', 'TEXT'); // promo uses allowed per phone number (NULL = no limit) // supervisor PIN (company owners) for approving voids // masked ID shown on screens; id_number itself is encrypted
 }

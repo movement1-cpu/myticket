@@ -91,6 +91,7 @@ export default function operatorRoutes(db) {
       const p = b.refund_policy;
       if (!Array.isArray(p) || !p.every(t => t.hours >= 0 && t.pct >= 0 && t.pct <= 100)) throw bad('Refund tiers need hours ≥ 0 and a percentage between 0 and 100.');
     }
+    if (b.emergency_phone !== undefined) db.prepare('UPDATE operators SET emergency_phone = ? WHERE id = ?').run(b.emergency_phone ? normPhone(b.emergency_phone) : null, req.operatorId);
     db.prepare(`UPDATE operators SET contact_email = COALESCE(?, contact_email), pacra_no = COALESCE(?, pacra_no), tpin = COALESCE(?, tpin),
       refund_policy = COALESCE(?, refund_policy), reschedule_fee = COALESCE(?, reschedule_fee), luggage_fees = COALESCE(?, luggage_fees), dynamic_pricing = COALESCE(?, dynamic_pricing) WHERE id = ?`)
       .run(b.contact_email ?? null, b.pacra_no ?? null, b.tpin ?? null,
@@ -130,6 +131,20 @@ export default function operatorRoutes(db) {
     const d = db.prepare(`INSERT INTO documents (operator_id, owner_type, owner_id, kind, filename, stored_name, mime, size, expires_on) VALUES (?,?,?,?,?,?,?,?,?) RETURNING id`)
       .get(req.operatorId, 'operator', req.operatorId, kind, f.filename, f.stored, req.body.file.mime, f.size, isDate(req.body.expires_on) ? req.body.expires_on : null);
     res.status(201).json(d);
+  });
+
+  /* ---------- safety incidents (SOS) ---------- */
+  r.get('/operator/incidents', ...desk, (req, res) => {
+    res.json(db.prepare(`SELECT i.*, b.plate, r.name route, u.name reported_by_name FROM incidents i JOIN trips t ON t.id = i.trip_id JOIN buses b ON b.id = t.bus_id
+      JOIN routes r ON r.id = t.route_id LEFT JOIN users u ON u.id = i.reported_by WHERE i.operator_id = ? ORDER BY i.status = 'open' DESC, i.id DESC LIMIT 50`).all(req.operatorId));
+  });
+  r.post('/operator/incidents/:id/resolve', ...owner, (req, res) => {
+    const i = mine('incidents', req.params.id, req.operatorId);
+    if (i.status !== 'open') throw conflict('Already resolved.');
+    required(req.body, ['resolution']);
+    db.prepare("UPDATE incidents SET status = 'resolved', resolved_by = ?, resolution = ?, resolved_at = datetime('now') WHERE id = ?").run(req.user.id, String(req.body.resolution).slice(0, 500), i.id);
+    audit(req, 'sos_resolved', 'incident', i.id, req.body.resolution);
+    res.json({ ok: true });
   });
 
   /* ---------- maintenance & compliance ---------- */

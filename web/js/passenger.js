@@ -454,6 +454,7 @@ export async function myTrips(app) {
     if (b.dataset.act === 'cancel') cancelFlow(t, () => myTrips(app));
     if (b.dataset.act === 'rate') rateFlow(t, () => myTrips(app));
     if (b.dataset.act === 'dispute') disputeFlow(ref, list, () => myTrips(app));
+    if (b.dataset.act === 'share') busy(b, async () => shareFlow(await api(`/my/bookings/${ref}/share`, { method: 'POST' }), () => api(`/my/bookings/${ref}/share`, { method: 'DELETE' })));
   });
 }
 function ticketCard(t) {
@@ -472,7 +473,7 @@ function ticketCard(t) {
       ${t.trip_status === 'delayed' ? html`<div class="notice">Running about ${t.delay_min} minutes late.</div>` : ''}
       <div class="row">
         ${['confirmed', 'completed'].includes(t.status) ? html`<a class="btn sm" href="${t.url}" target="_blank" rel="noopener">Ticket & QR</a><button class="btn ghost sm" data-act="pdf" data-ref="${t.ref}">Download PDF</button>` : ''}
-        ${t.status === 'confirmed' ? html`<a class="btn ghost sm" href="#/track/${t.trip_id}">${tr('m.track')}</a>` : ''}
+        ${t.status === 'confirmed' ? html`<a class="btn ghost sm" href="#/track/${t.trip_id}">${tr('m.track')}</a><button class="btn ghost sm" data-act="share" data-ref="${t.ref}">Share live location</button>` : ''}
         ${canChange ? html`<a class="btn ghost sm" href="#/reschedule/${t.ref}">${tr('m.change')}</a>` : ''}
         ${['confirmed', 'reserved', 'pending_payment'].includes(t.status) ? html`<button class="btn danger sm" data-act="cancel" data-ref="${t.ref}">${tr('m.cancel')}</button>` : ''}
         ${['pending_payment', 'reserved'].includes(t.status) ? html`<a class="btn copper sm" href="#/pay/${t.group_ref}">Pay now</a>` : ''}
@@ -483,6 +484,17 @@ function ticketCard(t) {
     <div class="stub"><span class="label">Booking</span><span class="mono" style="font-size:17px;font-weight:700">${t.ref}</span><span class="label">Seats</span><span class="mono">${active.map(s => s.seat_no).join(' ') || '—'}</span></div>
   </article>`;
 }
+/** Show a family tracking link with copy and WhatsApp buttons. */
+export function shareFlow(sh, stop) {
+  const text = `Follow my bus live: ${sh.url}`;
+  const m = modal(html`<h2>Share your live location</h2><p style="margin:0">Anyone with this link can see where the bus is and when it arrives, until 2 hours after arrival. It does not show your name, seat or ID.</p>
+    <input id="shurl" readonly value="${sh.url}" aria-label="Tracking link">
+    <div class="row"><button class="btn" id="copy">Copy link</button><a class="btn ghost" href="https://wa.me/?text=${encodeURIComponent(text)}" target="_blank" rel="noopener">Send on WhatsApp</a>
+      ${stop ? html`<button class="btn danger" id="stop">Stop sharing</button>` : ''}<button class="btn ghost" data-close>Done</button></div>`);
+  $('#copy', m.el).addEventListener('click', async () => { try { await navigator.clipboard.writeText(sh.url); toast('Link copied.'); } catch { $('#shurl', m.el).select(); toast('Select the link and copy it.'); } });
+  $('#stop', m.el)?.addEventListener('click', e => busy(e.target, async () => { await stop(); m.close(); toast('Sharing stopped. Old links no longer work.'); }));
+}
+
 async function cancelFlow(t, done) {
   const q = await api(`/my/bookings/${t.ref}/refund-quote`);
   const m = modal(html`<h2>Cancel ${t.ref}?</h2>

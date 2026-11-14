@@ -220,6 +220,7 @@ export function seedDemo(db) {
 
     // Luggage prices: Zambezi charges for bulky items (first bag free); Copperbelt Express carries luggage free.
     db.prepare('UPDATE operators SET luggage_fees = ? WHERE id = ?').run(JSON.stringify({ bags: 10, sacks: 20, containers: 15, boxes: 10, crates: 30, other: 25, free_bags: 1 }), ops[Z]);
+    db.prepare("UPDATE operators SET emergency_phone = '260960000099' WHERE id = ?").run(ops[Z]); // demo 24-hour line
     // Demand-based fares: Copperbelt Express raises prices as buses fill and rewards early booking.
     db.prepare('UPDATE operators SET dynamic_pricing = ? WHERE id = ?').run(JSON.stringify({ enabled: true, tiers: [{ occupancy: 50, pct: 10 }, { occupancy: 80, pct: 20 }], early_days: 3, early_pct: 10 }), ops[C]);
 

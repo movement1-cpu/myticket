@@ -14,6 +14,7 @@ import { LANGS, t as tr } from '../i18n.js';
 import { rateLimit, decrypt } from '../security.js';
 import { queue } from '../services/notify.js';
 import { joinWaitlist, getOffer } from '../services/waitlist.js';
+import { createShare, stopSharing, sharedView } from '../services/safety.js';
 import { config } from '../config.js';
 
 const list = v => v == null || v === '' ? [] : Array.isArray(v) ? v : String(v).split(',');
@@ -237,6 +238,18 @@ export default function publicRoutes(db) {
     } catch (e) { if (String(e.message).includes('UNIQUE')) throw conflict('You already rated this trip.'); throw e; }
     res.status(201).json({ ok: true });
   });
+  /* ---------- share my trip (family can follow the bus) ---------- */
+  r.post('/my/bookings/:ref/share', passenger, (req, res) => { rateLimit(db, `share:${req.user.id}`, 20, 3600); res.json(createShare(db, ownBooking(req))); });
+  r.delete('/my/bookings/:ref/share', passenger, (req, res) => res.json({ ok: true, stopped: stopSharing(db, ownBooking(req)) }));
+  /** Guests share from their ticket link (the signed ticket key proves they hold the ticket). */
+  r.post('/tickets/:ref/share', (req, res) => {
+    const b = db.prepare('SELECT * FROM bookings WHERE ref = ?').get(req.params.ref);
+    if (!b || !validKey(b.ref, req.query.k)) throw forbidden('This ticket link is not valid.');
+    rateLimit(db, `share:t:${b.id}`, 20, 3600);
+    res.json(createShare(db, b));
+  });
+  r.get('/shared/:token', (req, res) => { rateLimit(db, `shared:${req.ip}`, 240, 3600); res.json(sharedView(db, req.params.token)); });
+
   /* ---------- the passenger's own data ---------- */
   /** Everything we hold about this passenger, as JSON (their own ID numbers included, decrypted). */
   r.get('/my/data', passenger, (req, res) => {

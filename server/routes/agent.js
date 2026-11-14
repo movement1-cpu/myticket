@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { tx } from '../db.js';
 import { requireRole, requireApprovedOperator } from '../auth.js';
+import { rateLimit } from '../security.js';
 import { bad, notFound, conflict, localDate, localTime, required } from '../util.js';
 import { ensureTrips, routeStops } from '../services/trips.js';
 import { parseQr, qrPayload } from '../services/tickets.js';
@@ -9,6 +10,7 @@ import { notifyContact } from '../services/notify.js';
 import { layoutForTrip } from '../services/seats.js';
 import { luggageOf } from '../services/luggage.js';
 import { t as tr } from '../i18n.js';
+import { raiseSos } from '../services/safety.js';
 
 /**
  * Conductor / station agent field app.
@@ -53,7 +55,7 @@ export default function agentRoutes(db) {
     const layout = layoutForTrip(db, t.id);
     const refs = [...new Set(seats.map(s => s.ref))];
     res.json({
-      trip: { id: t.id, status: t.status, depart_local: localTime(t.depart_at), service_date: t.service_date, stops: routeStops(db, t.route_id).map(s => ({ city: s.city, terminal: s.terminal })) },
+      trip: { id: t.id, status: t.status, depart_local: localTime(t.depart_at), emergency_phone: db.prepare('SELECT emergency_phone FROM operators WHERE id = ?').get(t.operator_id)?.emergency_phone, service_date: t.service_date, stops: routeStops(db, t.route_id).map(s => ({ city: s.city, terminal: s.terminal })) },
       codes: Object.fromEntries(refs.map(ref => [ref, qrPayload(ref)])),
       seats, held, layout: { name: layout.name, decks: layout.spec.decks }, downloaded_at: new Date().toISOString(),
     });
@@ -121,6 +123,13 @@ export default function agentRoutes(db) {
     }
     db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?,?,?,?,?)').run(req.user.id, `trip_${status}`, 'trip', String(t.id), delay ? `${delay} min` : null);
     res.json({ ok: true, status, notified: bookings.length, refunded });
+  });
+
+  /** SOS: one tap alerts the company and the platform with the bus's location. Rate-limited only lightly on purpose. */
+  r.post('/agent/trips/:id/sos', ...field, (req, res) => {
+    const t = myTrip(req);
+    rateLimit(db, `sos:${req.user.id}`, 10, 600, 'SOS already sent several times. The company and platform have been alerted.');
+    res.status(201).json(raiseSos(db, { trip: t, user: req.user, ...req.body }));
   });
 
   /** GPS ping from the conductor's phone while the trip is running. */

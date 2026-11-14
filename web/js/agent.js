@@ -166,6 +166,7 @@ async function tripView(id) {
       <div class="bigbtns"><button class="btn copper" id="cam">Scan QR code</button><button class="btn ghost" id="manual">Type reference</button></div></div>
     <div class="card"><div class="head"><h3>On this bus</h3><div class="chips"><label class="chip"><input type="radio" name="view" value="bus" ${view === 'bus' ? 'checked' : ''}>Bus</label><label class="chip"><input type="radio" name="view" value="list" ${view === 'list' ? 'checked' : ''}>List</label></div></div>
       <div id="lugsum" class="small"></div><div id="seats"></div><div id="detail"></div></div>
+    <button class="btn" id="sos" style="background:var(--bad);color:#fff;padding:14px;font-size:16px">SOS: emergency on this bus</button>
     <div class="card"><h3>Trip status</h3><p class="small muted" style="margin:0">Passengers get an SMS for each change. Needs internet.</p>
       <div class="bigbtns"><button class="btn" data-st="boarding">Boarding</button><button class="btn" data-st="departed">Departed</button><button class="btn ghost" data-st="delayed">Delayed…</button><button class="btn ghost" data-st="arrived">Arrived</button></div>
       <label class="chip" style="justify-self:start"><input type="checkbox" id="gps" ${gpsWatch ? 'checked' : ''}>Share this phone's location for live tracking</label></div>
@@ -227,6 +228,7 @@ async function tripView(id) {
   $('#manual').addEventListener('click', () => { const ref = window.prompt?.('Booking reference (MT…)'); if (ref) check(ref.trim().toUpperCase()); });
   $$('[data-st]').forEach(b => b.addEventListener('click', () => setStatus(b, id)));
   $('#gps').addEventListener('change', e => e.target.checked ? startGps(id) : stopGps());
+  $('#sos').addEventListener('click', () => sos(id, m));
   $$('[name=view]').forEach(r => r.addEventListener('change', () => { view = r.value; local.set('view', view); $('#detail').innerHTML = ''; drawSeats(); }));
   $('#seats').addEventListener('click', e => { const b = e.target.closest('[data-seat]'); if (b) showSeat(b.dataset.seat); });
 
@@ -257,6 +259,28 @@ async function tripView(id) {
     show('ok', `Board (offline): seat ${seats.map(s => s.seat_no).join(', ')} · ${seats[0].passenger_name}. Check ${seats[0].id_type}. ${lugLine(seats)}`);
   }
   drawSeats();
+}
+
+/** SOS: pick what happened, attach the phone's location, alert the company and the platform. */
+function sos(id, m) {
+  const box = document.createElement('div');
+  box.className = 'overlay';
+  box.innerHTML = String(html`<div class="modal"><h2 style="color:var(--bad)">Emergency</h2>
+    <p style="margin:0">This sends an SMS and WhatsApp alert with the bus's location to your company and the MyTicket team. If someone is in danger, also call the emergency services.</p>
+    <div class="bigbtns">${[['accident', 'Accident'], ['medical', 'Medical'], ['security', 'Robbery / threat'], ['breakdown', 'Breakdown'], ['other', 'Other']].map(([k, l]) => html`<button class="btn danger" data-k="${k}" style="padding:14px">${l}</button>`)}</div>
+    <input id="sosnote" placeholder="What happened? (optional)" maxlength="300"><button class="btn ghost" id="sosx">Cancel</button></div>`);
+  document.body.append(box);
+  $('#sosx', box).addEventListener('click', () => box.remove());
+  box.addEventListener('click', async e => {
+    const b = e.target.closest('[data-k]'); if (!b) return;
+    if (!navigator.onLine) { toast(`No signal. Call your company now${m?.trip?.emergency_phone ? ` on ${m.trip.emergency_phone}` : ''}.`, true); return; }
+    b.disabled = true; b.textContent = 'Sending…';
+    const pos = await new Promise(r => navigator.geolocation ? navigator.geolocation.getCurrentPosition(p => r(p.coords), () => r(null), { enableHighAccuracy: true, timeout: 6000 }) : r(null));
+    try {
+      const r = await api(`/agent/trips/${id}/sos`, { method: 'POST', body: { kind: b.dataset.k, note: $('#sosnote', box).value, lat: pos?.latitude, lng: pos?.longitude } });
+      box.remove(); toast(`Alert sent to ${r.alerted} people${pos ? ' with your location' : ' (no GPS location)'}. Stay safe.`);
+    } catch (err) { if (!guard(err)) { toast(err.message, true); b.disabled = false; b.textContent = 'Try again'; } }
+  });
 }
 
 async function setStatus(btn, id) {

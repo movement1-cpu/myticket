@@ -234,6 +234,10 @@ export default function adminRoutes(db) {
     audit(req, 'broadcast', 'notification', req.body.audience, `${phones.length} recipients: ${msg}`);
     res.json({ recipients: phones.length, messages: phones.length * channels.length });
   });
+  r.get('/admin/incidents', ...scope('full','support'), (_req, res) => {
+    res.json(db.prepare(`SELECT i.*, o.name operator, b.plate, r.name route FROM incidents i JOIN operators o ON o.id = i.operator_id JOIN trips t ON t.id = i.trip_id
+      JOIN buses b ON b.id = t.bus_id JOIN routes r ON r.id = t.route_id ORDER BY i.status = 'open' DESC, i.id DESC LIMIT 100`).all());
+  });
   r.get('/admin/notifications', ...scope('full','support'), (_req, res) => {
     res.json(db.prepare('SELECT id, channel, recipient, kind, status, attempts, last_error, created_at, sent_at, substr(body,1,140) body FROM notifications ORDER BY id DESC LIMIT 100').all());
   });
