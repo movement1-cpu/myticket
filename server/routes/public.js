@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { tx } from '../db.js';
-import { hashPassword, verifyPassword, issueToken, requireRole } from '../auth.js';
+import { requireRole } from '../auth.js';
 import { bad, notFound, forbidden, conflict, normPhone, required, isDate, HttpError, localDate } from '../util.js';
 import { searchTrips, tripRow, routeStops, tripPosition, ensureTrips } from '../services/trips.js';
 import { seatMap, holdSeats, releaseHold } from '../services/seats.js';
@@ -11,7 +11,7 @@ import { providers } from '../services/payments/providers.js';
 import { bus } from '../services/events.js';
 import { pointsBalance, loyaltyTerms } from '../services/loyalty.js';
 import { LANGS, t as tr } from '../i18n.js';
-import { rateLimit, clearLimit, createOtp, verifyOtp } from '../security.js';
+import { rateLimit } from '../security.js';
 import { queue } from '../services/notify.js';
 import { joinWaitlist, getOffer } from '../services/waitlist.js';
 import { config } from '../config.js';
@@ -20,121 +20,6 @@ const list = v => v == null || v === '' ? [] : Array.isArray(v) ? v : String(v).
 
 export default function publicRoutes(db) {
   const r = Router();
-
-  /* ---------- auth ---------- */
-  const COMMON = new Set(['password', 'password1', '12345678', '123456789', '1234567890', 'qwertyui', 'qwerty123', 'zambia123', 'lusaka123', 'iloveyou', '11111111', '00000000', 'abcd1234', 'myticket']);
-  const checkPassword = (pw, phone) => {
-    pw = String(pw || '');
-    if (pw.length < 8) throw bad('Use at least 8 characters for the password.');
-    if (pw.length > 200) throw bad('That password is too long.');
-    if (COMMON.has(pw.toLowerCase()) || /^(\d)\1+$/.test(pw)) throw bad('That password is too easy to guess. Use a longer phrase.');
-    if (phone && pw.replace(/\D/g, '').length >= 9 && phone.endsWith(pw.replace(/\D/g, '').slice(-9))) throw bad('Do not use your phone number as the password.');
-  };
-  const devCode = code => (config.isProd ? {} : { dev_code: code }); // development only: SMS is not really sent
-  const sendCode = (phone, purpose, lang) => {
-    const code = createOtp(db, phone, purpose);
-    queue(db, { channel: 'sms', to: phone, kind: `otp_${purpose}`, body: tr(lang || 'en', `otp.${purpose}`, { code }) });
-    return code;
-  };
-
-  r.post('/auth/register', (req, res) => {
-    required(req.body, ['name', 'phone', 'password']);
-    const phone = normPhone(req.body.phone);
-    checkPassword(req.body.password, phone);
-    rateLimit(db, `register:${req.ip}`, 10, 3600);
-    if (db.prepare('SELECT 1 FROM users WHERE phone = ?').get(phone)) throw conflict('An account with this phone number already exists. Sign in instead, or reset your password.');
-    const u = db.prepare("INSERT INTO users (role, name, phone, email, password_hash, lang) VALUES ('passenger',?,?,?,?,?) RETURNING id, role, name, phone, email, phone_verified, lang")
-      .get(req.body.name.trim(), phone, req.body.email?.trim() || null, hashPassword(req.body.password), LANGS[req.body.lang] ? req.body.lang : 'en');
-    // Earlier guest bookings with this number are linked only after the phone is verified (stops anyone claiming someone else's trips).
-    const code = sendCode(phone, 'verify', u.lang);
-    res.status(201).json({ token: issueToken(u), user: u, verify_phone: true, ...devCode(code) });
-  });
-
-  r.post('/auth/register-operator', (req, res) => {
-    required(req.body, ['company_name', 'name', 'phone', 'password']);
-    const phone = normPhone(req.body.phone);
-    checkPassword(req.body.password, phone);
-    rateLimit(db, `register:${req.ip}`, 10, 3600);
-    if (db.prepare('SELECT 1 FROM users WHERE phone = ?').get(phone)) throw conflict('An account with this phone number already exists.');
-    if (db.prepare('SELECT 1 FROM operators WHERE name = ?').get(req.body.company_name.trim())) throw conflict('A company with this name is already registered.');
-    const u = tx(db, () => {
-      const o = db.prepare('INSERT INTO operators (name, pacra_no, tpin, contact_phone, contact_email) VALUES (?,?,?,?,?) RETURNING id')
-        .get(req.body.company_name.trim(), req.body.pacra_no || null, req.body.tpin || null, phone, req.body.email || null);
-      return db.prepare("INSERT INTO users (role, name, phone, email, password_hash, operator_id) VALUES ('operator',?,?,?,?,?) RETURNING id, role, name, phone, email, operator_id, phone_verified")
-        .get(req.body.name.trim(), phone, req.body.email || null, hashPassword(req.body.password), o.id);
-    });
-    const code = sendCode(phone, 'verify');
-    res.status(201).json({ token: issueToken(u), user: { ...u, operator_status: 'pending' }, verify_phone: true, ...devCode(code) });
-  });
-
-  r.post('/auth/login', (req, res) => {
-    required(req.body, ['phone', 'password']);
-    const phone = normPhone(req.body.phone);
-    rateLimit(db, `login:ip:${req.ip}`, 30, 900, 'Too many sign-in attempts from this network.');
-    rateLimit(db, `login:${phone}`, 8, 900, 'Too many sign-in attempts for this number. Wait, or reset your password.');
-    const u = db.prepare('SELECT u.*, o.status operator_status, o.name operator_name FROM users u LEFT JOIN operators o ON o.id = u.operator_id WHERE phone = ?').get(phone);
-    if (!u || !u.active || !verifyPassword(req.body.password, u.password_hash)) throw new HttpError(401, 'Phone number or password is wrong.');
-    clearLimit(db, `login:${phone}`);
-    const { password_hash, ...user } = u;
-    res.json({ token: issueToken(u), user });
-  });
-
-  /** Ask for a code by SMS. purpose=reset works signed out; the answer never reveals whether the number has an account. */
-  r.post('/auth/otp', (req, res) => {
-    const purpose = req.body.purpose;
-    if (purpose === 'verify') {
-      if (!req.user) throw new HttpError(401, 'Sign in to continue.');
-      if (req.user.phone_verified) return res.json({ ok: true, already: true });
-      rateLimit(db, `otp:${req.user.phone}`, 3, 900, 'We already sent several codes.');
-      return res.json({ ok: true, ...devCode(sendCode(req.user.phone, 'verify', req.user.lang)) });
-    }
-    if (purpose !== 'reset') throw bad('Unknown code type.');
-    const phone = normPhone(req.body.phone);
-    rateLimit(db, `otp:ip:${req.ip}`, 10, 3600, 'Too many code requests from this network.');
-    rateLimit(db, `otp:${phone}`, 3, 900, 'We already sent several codes to this number.');
-    const u = db.prepare('SELECT id, lang FROM users WHERE phone = ? AND active = 1').get(phone);
-    const code = u ? sendCode(phone, 'reset', u.lang) : null;
-    res.json({ ok: true, message: 'If this number has an account, a code is on its way by SMS.', ...(code ? devCode(code) : {}) });
-  });
-
-  r.post('/auth/verify-phone', requireRole('passenger', 'clerk', 'conductor', 'operator', 'admin'), (req, res) => {
-    verifyOtp(db, req.user.phone, 'verify', req.body.code);
-    db.prepare('UPDATE users SET phone_verified = 1 WHERE id = ?').run(req.user.id);
-    const linked = req.user.role === 'passenger'
-      ? db.prepare("UPDATE bookings SET user_id = ? WHERE user_id IS NULL AND contact_phone = ? AND channel = 'web'").run(req.user.id, req.user.phone).changes : 0;
-    res.json({ ok: true, linked_bookings: linked });
-  });
-
-  /** Reset with an SMS code. Signs out every device and tells the owner by SMS. */
-  r.post('/auth/password/reset', (req, res) => {
-    required(req.body, ['phone', 'code', 'password']);
-    const phone = normPhone(req.body.phone);
-    rateLimit(db, `reset:${phone}`, 10, 3600);
-    const u = db.prepare('SELECT * FROM users WHERE phone = ? AND active = 1').get(phone);
-    if (!u) throw new HttpError(400, 'That code has expired. Ask for a new one.', 'otp_expired');
-    verifyOtp(db, phone, 'reset', req.body.code);
-    checkPassword(req.body.password, phone);
-    setPassword(u, req.body.password, 'reset');
-    clearLimit(db, `login:${phone}`);
-    res.json({ ok: true });
-  });
-
-  r.post('/auth/password/change', requireRole('passenger', 'clerk', 'conductor', 'operator', 'admin'), (req, res) => {
-    required(req.body, ['current_password', 'password']);
-    const u = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
-    rateLimit(db, `pwchange:${u.id}`, 5, 900);
-    if (!verifyPassword(req.body.current_password, u.password_hash)) throw new HttpError(400, 'Your current password is wrong.');
-    checkPassword(req.body.password, u.phone);
-    setPassword(u, req.body.password, 'change');
-    res.json({ ok: true, token: issueToken(u) });
-  });
-
-  /** New password: every earlier sign-in stops working, and the owner gets an SMS. */
-  function setPassword(u, pw, how) {
-    db.prepare("UPDATE users SET password_hash = ?, password_changed_at = ?, phone_verified = 1 WHERE id = ?").run(hashPassword(pw), new Date().toISOString(), u.id);
-    queue(db, { channel: 'sms', to: u.phone, kind: 'password_changed', body: tr(u.lang, 'sms.password_changed', {}) });
-    db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id) VALUES (?,?,?,?)').run(u.id, `password_${how}`, 'user', String(u.id));
-  }
 
   r.get('/me', requireRole('passenger', 'clerk', 'conductor', 'operator', 'admin'), (req, res) => res.json(req.user));
   r.put('/me', requireRole('passenger', 'clerk', 'conductor', 'operator', 'admin'), (req, res) => {

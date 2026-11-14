@@ -336,6 +336,28 @@ CREATE TABLE IF NOT EXISTS otp_codes (
 );
 CREATE INDEX IF NOT EXISTS ix_otp_phone ON otp_codes(phone, purpose);
 
+-- Sessions: only a hash of the token is stored. Revocable one by one or all at once.
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,                -- sha256(token)
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  last_seen TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL,
+  idle_minutes INTEGER NOT NULL,
+  ip TEXT, user_agent TEXT, device_id TEXT,
+  mfa_pending INTEGER NOT NULL DEFAULT 0,
+  revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_sessions_user ON sessions(user_id);
+CREATE TABLE IF NOT EXISTS known_devices (
+  user_id INTEGER NOT NULL REFERENCES users(id), device_id TEXT NOT NULL,
+  first_seen TEXT NOT NULL DEFAULT (datetime('now')), user_agent TEXT,
+  PRIMARY KEY (user_id, device_id)
+);
+CREATE TABLE IF NOT EXISTS recovery_codes (
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), code_hash TEXT NOT NULL, used_at TEXT
+);
+
 -- Language preference for phone numbers without an account (USSD / SMS users).
 CREATE TABLE IF NOT EXISTS phone_prefs (phone TEXT PRIMARY KEY, lang TEXT NOT NULL DEFAULT 'en');
 
@@ -351,6 +373,7 @@ const DEFAULT_SETTINGS = {
   commission_pct: '8',          // % of fare kept by platform
   hold_minutes: '10',           // seat lock during checkout
   reserve_minutes: '30',        // pay-at-station hold
+  mfa_operator_required: '0',      // 1 = bus company owners must use two-step sign-in too (admins always must)
   reminder_hours: '3',              // SMS reminder this many hours before departure (0 = off)
   waitlist_offer_minutes: '30',     // how long freed seats are held for the next person on the waitlist
   loyalty_points_per_kwacha: '0.1', // 1 point per K10 of fare on completed trips
@@ -399,6 +422,10 @@ function migrate(db) {
   // v5 security
   add('users', 'phone_verified', 'INTEGER NOT NULL DEFAULT 0');
   add('users', 'password_changed_at', 'TEXT');
+  add('users', 'totp_secret', 'TEXT');          // encrypted
+  add('users', 'totp_pending_secret', 'TEXT');  // encrypted, during setup
+  add('users', 'totp_enabled', 'INTEGER NOT NULL DEFAULT 0');
+  add('users', 'admin_scope', "TEXT NOT NULL DEFAULT 'full'");
 }
 
 /** Run fn inside a write transaction. BEGIN IMMEDIATE serialises writers, so check-then-insert is safe. */

@@ -6,13 +6,17 @@ import { fileURLToPath } from 'node:url';
 import { openDb, tx } from './db.js';
 import { config } from './config.js';
 import { hashPassword } from './auth.js';
+import { encrypt } from './security.js';
 import { ensureTrips } from './services/trips.js';
 import { priceLeg } from './services/pricing.js';
 import { localDate, addDays, ref, isoWeekday } from './util.js';
 
 export const DEMO_PASSWORD = 'demo1234';
+// Development only: the demo admins' authenticator secret, so the demo and the tests can complete two-step sign-in.
+export const DEMO_TOTP_SECRET = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
 export const DEMO_USERS = [
   { role: 'admin', name: 'Platform Admin', phone: '260950000001' },
+  { role: 'admin', name: 'Finance Admin (second approver)', phone: '260950000002' },
   { role: 'operator', name: 'Mwila Banda (Zambezi Coaches owner)', phone: '260960000002', op: 'Zambezi Coaches' },
   { role: 'clerk', name: 'Chanda Phiri (counter clerk)', phone: '260960000003', op: 'Zambezi Coaches' },
   { role: 'conductor', name: 'Mutale Zulu (conductor)', phone: '260970000004', op: 'Zambezi Coaches' },
@@ -234,6 +238,7 @@ export function seedDemo(db) {
     // Loyalty: the demo passenger has points to spend.
     db.prepare("INSERT INTO loyalty_ledger (user_id, points, kind, note) VALUES (?, 250, 'adjust', 'Welcome bonus')").run(nat);
     db.prepare('UPDATE users SET phone_verified = 1').run(); // demo accounts count as verified
+    db.prepare("UPDATE users SET totp_secret = ?, totp_enabled = 1 WHERE role = 'admin'").run(encrypt(DEMO_TOTP_SECRET));
   });
 }
 

@@ -16,7 +16,7 @@ addEventListener('online', () => { setNet(); sync(); });
 addEventListener('offline', setNet);
 setInterval(() => navigator.onLine && queue.all().length && sync(), 30000);
 
-$('#logout').addEventListener('click', () => { if (queue.all().length) return toast('Sync your scans before signing out.', true); auth.clear(); start(); });
+$('#logout').addEventListener('click', async () => { if (queue.all().length) return toast('Sync your scans before signing out.', true); await api('/auth/logout', { method: 'POST' }).catch(() => {}); auth.clear(); start(); });
 
 async function sync() {
   const q = queue.all();
@@ -49,8 +49,18 @@ function login() {
   const f = $('#f');
   f.addEventListener('submit', e => { e.preventDefault(); busy(f.querySelector('button'), async () => {
     const r = await api('/auth/login', { method: 'POST', body: formData(f) });
-    if (!['conductor', 'clerk', 'operator'].includes(r.user.role)) throw new Error('This app is for bus company staff.');
-    auth.set(r.token, r.user); start();
+    if (!['conductor', 'clerk', 'operator'].includes(r.user.role)) { await api('/auth/logout', { method: 'POST' }); throw new Error('This app is for bus company staff.'); }
+    if (r.mfa_required) {
+      let method = 'sms', code = null;
+      if (r.methods.includes('totp')) { code = window.prompt?.('Code from your authenticator app (leave empty to get an SMS code instead)'); if (code) method = 'totp'; }
+      if (method === 'sms') {
+        const s = await api('/auth/mfa/sms', { method: 'POST' });
+        code = window.prompt?.(`Code sent by SMS to ${s.sent_to}${s.dev_code ? ` (development: ${s.dev_code})` : ''}`);
+      }
+      const v = await api('/auth/mfa/verify', { method: 'POST', body: { method, code } });
+      auth.set(null, v.user); return start();
+    }
+    auth.set(null, r.user); start();
   }); });
 }
 

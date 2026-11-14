@@ -5,6 +5,10 @@ export const LANGS = { en: 'English', bem: 'Ichibemba', nya: 'Chinyanja', toi: '
 
 const M = {
   en: {
+    'sms.new_device': 'MyTicket: New sign-in to your account from {device} at {time}. If this was not you, reset your password now and sign out everywhere.',
+    'sms.recovery_used': 'MyTicket: A recovery code was used to sign in to your account. If this was not you, reset your password now.',
+    'sms.totp_on': 'MyTicket: Two-step sign-in with an authenticator app is now on for your account.',
+    'sms.totp_off': 'MyTicket: Two-step sign-in with an authenticator app was turned off. If this was not you, reset your password now.',
     'otp.verify': 'MyTicket code: {code}. It confirms this is your phone. It expires in 5 minutes. Never share it with anyone, including MyTicket staff.',
     'otp.reset': 'MyTicket password reset code: {code}. Expires in 5 minutes. Never share it with anyone, including MyTicket staff.',
     'otp.login': 'MyTicket sign-in code: {code}. Expires in 5 minutes. Never share it with anyone.',
@@ -48,6 +52,7 @@ const M = {
     'sms.help': 'MyTicket SMS: STATUS <ref> for your bus, TICKETS for your bookings. To book, dial the USSD code or visit our website.',
   },
   bem: {
+    'sms.new_device': 'MyTicket: Kwaliba ukwingila kupya mu akaunti yenu ukufuma pa {device} pa {time}. Nga te imwe, alulenipo password nomba.',
     'otp.verify': 'MyTicket code: {code}. Ilangilila ukuti iyi foni yenu. Ikapwa mu mamineti 5. Mwilaishibisha nangu umo.',
     'otp.reset': 'MyTicket code ya kwalula password: {code}. Ikapwa mu mamineti 5. Mwilaishibisha nangu umo.',
     'otp.login': 'MyTicket code ya kwingila: {code}. Ikapwa mu mamineti 5. Mwilaishibisha nangu umo.',
@@ -90,6 +95,7 @@ const M = {
     'status.scheduled': 'pa nshita', 'status.boarding': 'ilepoka abantu', 'status.departed': 'ili mu musebo', 'status.delayed': 'ilechelwa mamineti {min}', 'status.arrived': 'yafika', 'status.cancelled': 'YAFUMISHIWAPO',
   },
   nya: {
+    'sms.new_device': 'MyTicket: Wina walowa mu akaunti yanu kuchokera pa {device} pa {time}. Ngati si inu, sinthani password tsopano.',
     'otp.verify': 'MyTicket code: {code}. Ikutsimikiza kuti foni iyi ndi yanu. Itha mphindi 5. Musauze aliyense.',
     'otp.reset': 'MyTicket code yosintha password: {code}. Itha mphindi 5. Musauze aliyense.',
     'otp.login': 'MyTicket code yolowera: {code}. Itha mphindi 5. Musauze aliyense.',
@@ -132,6 +138,7 @@ const M = {
     'status.scheduled': 'pa nthawi', 'status.boarding': 'ikukweza anthu', 'status.departed': 'ili pa msewu', 'status.delayed': 'ichedwa mphindi {min}', 'status.arrived': 'yafika', 'status.cancelled': 'YALETSEDWA',
   },
   toi: {
+    'sms.new_device': 'MyTicket: Kwanjilwa mu akaunti yanu kuzwa ku {device} ciindi ca {time}. Kuti tensi ndinywe, amucince password lino.',
     'otp.verify': 'MyTicket code: {code}. Itondezya kuti foni eeyi njanu. Iyoomana mumaminiti 5. Mutaambili muntu.',
     'otp.reset': 'MyTicket code yakucinca password: {code}. Iyoomana mumaminiti 5. Mutaambili muntu.',
     'otp.login': 'MyTicket code yakunjila: {code}. Iyoomana mumaminiti 5. Mutaambili muntu.',

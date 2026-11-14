@@ -23,10 +23,11 @@ const store = {
   get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
   set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
+// The session itself lives in an HttpOnly cookie that scripts cannot read. Only the (non-secret) profile is cached here.
 export const auth = {
-  get token() { return store.get('mt.token'); },
+  get token() { return null; },
   get user() { return store.get('mt.user'); },
-  set(token, user) { store.set('mt.token', token); store.set('mt.user', user); },
+  set(_token, user) { store.set('mt.token', null); store.set('mt.user', user); },
   clear() { store.set('mt.token', null); store.set('mt.user', null); },
 };
 
@@ -34,13 +35,17 @@ export const auth = {
 export class ApiError extends Error { constructor(status, body) { super(body?.error || `Request failed (${status})`); this.status = status; this.code = body?.code; } }
 export async function api(path, { method = 'GET', body, headers = {} } = {}) {
   const res = await fetch('/api' + path, {
-    method,
-    headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(auth.token ? { Authorization: `Bearer ${auth.token}` } : {}), ...headers },
+    method, credentials: 'same-origin',
+    // X-MT-CSRF: the server refuses cookie-authenticated changes without it (other sites cannot add it).
+    headers: { 'X-MT-CSRF': '1', ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers },
     body: body ? JSON.stringify(body) : undefined,
   });
   const ct = res.headers.get('content-type') || '';
   const data = ct.includes('json') ? await res.json() : await res.blob();
-  if (res.status === 401 && auth.token) { auth.clear(); location.hash = '#/login'; }
+  if (res.status === 401 && auth.user && !path.startsWith('/auth/') && path !== '/me') {
+    if (data?.code === 'mfa_required') location.hash = '#/login';
+    else { auth.clear(); sessionStorage.setItem('mt.next', location.hash); location.hash = '#/login'; }
+  }
   if (!res.ok) throw new ApiError(res.status, data);
   return data;
 }

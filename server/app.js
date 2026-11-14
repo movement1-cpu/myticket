@@ -6,6 +6,7 @@ import { config } from './config.js';
 import { authenticate, requireRole } from './auth.js';
 import { HttpError, notFound } from './util.js';
 import publicRoutes from './routes/public.js';
+import accountRoutes from './routes/account.js';
 import operatorRoutes from './routes/operator.js';
 import agentRoutes from './routes/agent.js';
 import adminRoutes from './routes/admin.js';
@@ -34,6 +35,7 @@ export function createApp(db) {
   app.use(authenticate(db));
 
   const api = express.Router();
+  api.use(accountRoutes(db));
   api.use(publicRoutes(db));
   api.use(operatorRoutes(db));
   api.use(agentRoutes(db));

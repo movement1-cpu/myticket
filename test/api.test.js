@@ -9,7 +9,8 @@ process.env.UPLOAD_DIR = path.join(tmp, 'uploads');
 
 const { openDb } = await import('../server/db.js');
 const { createApp } = await import('../server/app.js');
-const { seedDemo, DEMO_PASSWORD } = await import('../server/seed.js');
+const { seedDemo, DEMO_PASSWORD, DEMO_TOTP_SECRET } = await import('../server/seed.js');
+const { totp } = await import('../server/security.js');
 const { sweep } = await import('../server/services/bookings.js');
 const { localDate, addDays } = await import('../server/util.js');
 
@@ -24,7 +25,14 @@ async function api(method, url, { token, body, headers = {} } = {}) {
   const ct = res.headers.get('content-type') || '';
   return { status: res.status, body: ct.includes('json') ? await res.json() : await res.text(), headers: res.headers };
 }
-const login = async phone => (await api('POST', '/api/auth/login', { body: { phone, password: DEMO_PASSWORD } })).body.token;
+async function login(phone) {
+  const r = (await api('POST', '/api/auth/login', { body: { phone, password: DEMO_PASSWORD } })).body;
+  if (r.mfa_required) {
+    const v = await api('POST', '/api/auth/mfa/verify', { token: r.token, body: { method: 'totp', code: totp(DEMO_TOTP_SECRET) } });
+    assert.equal(v.status, 200, JSON.stringify(v.body));
+  }
+  return r.token;
+}
 const tomorrow = () => addDays(localDate(), 1);
 
 async function firstTrip(from = 'Lusaka', to = 'Kitwe', date = tomorrow()) {
@@ -650,4 +658,74 @@ test('login lockout survives a restart (stored in the database)', async () => {
   const blocked = await api('POST', '/api/auth/login', { body: { phone: '0961222111', password: 'wrong-password' } });
   assert.equal(blocked.status, 429);
   assert.ok(db.prepare("SELECT count FROM rate_limits WHERE key = 'login:260961222111'").get().count >= 8);
+});
+
+/* ---------------- Security step 2: sessions, two-step sign-in, devices ---------------- */
+async function rawLogin(phone, password = DEMO_PASSWORD, headers = {}) {
+  const res = await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify({ phone, password }) });
+  return { status: res.status, body: await res.json(), cookies: res.headers.getSetCookie() };
+}
+
+test('admin must pass a second step; a half-signed-in session can do nothing else', async () => {
+  const r = await rawLogin('0950000001');
+  assert.equal(r.body.mfa_required, true);
+  assert.deepEqual(r.body.methods, ['totp', 'sms', 'recovery']);
+  const blocked = await api('GET', '/api/admin/analytics', { token: r.body.token });
+  assert.equal(blocked.status, 401);
+  assert.equal(blocked.body.code, 'mfa_required');
+  assert.equal((await api('POST', '/api/auth/mfa/verify', { token: r.body.token, body: { method: 'totp', code: '000000' } })).status, 400);
+  // SMS fallback
+  const sms = (await api('POST', '/api/auth/mfa/sms', { token: r.body.token })).body;
+  const ok = await api('POST', '/api/auth/mfa/verify', { token: r.body.token, body: { method: 'sms', code: sms.dev_code } });
+  assert.equal(ok.status, 200);
+  assert.equal((await api('GET', '/api/admin/analytics', { token: r.body.token })).status, 200);
+});
+
+test('session cookie is HttpOnly + SameSite=Strict; cookie requests need the CSRF header', async () => {
+  const r = await rawLogin('0971234567');
+  const cookie = r.cookies.find(c => c.startsWith('mt_session='));
+  assert.match(cookie, /HttpOnly/); assert.match(cookie, /SameSite=Strict/);
+  const jar = r.cookies.map(c => c.split(';')[0]).join('; ');
+  const get = await fetch(base + '/api/me', { headers: { cookie: jar } });
+  assert.equal(get.status, 200);
+  const noHeader = await fetch(base + '/api/auth/logout-all', { method: 'POST', headers: { cookie: jar } });
+  assert.equal(noHeader.status, 403, 'cross-site style request blocked');
+  const withHeader = await fetch(base + '/api/auth/logout-all', { method: 'POST', headers: { cookie: jar, 'x-mt-csrf': '1' } });
+  assert.equal(withHeader.status, 200);
+  assert.equal(r.body.token && db.prepare('SELECT COUNT(*) n FROM sessions WHERE id = ?').get(r.body.token).n, 0, 'only a hash of the token is stored');
+});
+
+test('authenticator app: setup, recovery codes (single use), sign out everywhere, new-device SMS', async () => {
+  const tok = await login('0960000002'); // operator owner
+  const setup = (await api('POST', '/api/auth/totp/setup', { token: tok })).body;
+  assert.match(setup.uri, /^otpauth:\/\/totp\/MyTicket/);
+  assert.match(setup.qr_svg, /<svg/);
+  assert.equal((await api('POST', '/api/auth/totp/enable', { token: tok, body: { code: '123456' } })).status, 400);
+  const en = (await api('POST', '/api/auth/totp/enable', { token: tok, body: { code: totp(setup.secret) } })).body;
+  assert.equal(en.recovery_codes.length, 8);
+  assert.ok(db.prepare("SELECT totp_secret FROM users WHERE phone = '260960000002'").get().totp_secret.startsWith('enc:v1:'), 'secret encrypted at rest');
+  // Now the owner needs a second step; use a recovery code from a "new device"
+  const r = await rawLogin('0960000002', DEMO_PASSWORD, { 'user-agent': 'Mozilla/5.0 (Linux; Android 14) Chrome/120.0' });
+  assert.equal(r.body.mfa_required, true);
+  const used = await api('POST', '/api/auth/mfa/verify', { token: r.body.token, body: { method: 'recovery', code: en.recovery_codes[0] } });
+  assert.equal(used.status, 200);
+  const again = await rawLogin('0960000002');
+  assert.equal((await api('POST', '/api/auth/mfa/verify', { token: again.body.token, body: { method: 'recovery', code: en.recovery_codes[0] } })).status, 400, 'recovery codes work once');
+  assert.ok(db.prepare("SELECT 1 FROM notifications WHERE kind = 'new_device' AND recipient = '260960000002'").get());
+  const list = (await api('GET', '/api/auth/sessions', { token: r.body.token })).body;
+  assert.ok(list.length >= 2 && list.some(s => s.current) && list.some(s => s.device === 'Chrome on Android'));
+  const out = (await api('POST', '/api/auth/logout-all', { token: r.body.token })).body;
+  assert.ok(out.signed_out >= 1);
+  assert.equal((await api('GET', '/api/me', { token: tok })).status, 401, 'other devices signed out');
+  assert.equal((await api('GET', '/api/me', { token: r.body.token })).status, 200, 'this device stays signed in');
+  // Turn it off again so later tests sign in normally
+  assert.equal((await api('POST', '/api/auth/totp/disable', { token: r.body.token, body: { password: DEMO_PASSWORD, code: totp(setup.secret) } })).status, 200);
+  tokens.operator = r.body.token;
+});
+
+test('staff sessions end after 12 hours idle', async () => {
+  const tok = await login('0960000003');
+  db.prepare("UPDATE sessions SET last_seen = datetime('now', '-13 hours') WHERE user_id = (SELECT id FROM users WHERE phone = '260960000003')").run();
+  assert.equal((await api('GET', '/api/me', { token: tok })).status, 401);
+  tokens.clerk = await login('0960000003');
 });
