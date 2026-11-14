@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
 import { authenticate, requireRole } from './auth.js';
+import { idempotent } from './security.js';
 import { HttpError, notFound } from './util.js';
 import publicRoutes from './routes/public.js';
 import accountRoutes from './routes/account.js';
@@ -35,6 +36,10 @@ export function createApp(db) {
   app.use(authenticate(db));
 
   const api = express.Router();
+  // Money-moving endpoints: a retried or double-tapped request with the same Idempotency-Key is answered once.
+  const once = idempotent(db);
+  for (const path of ['/bookings', '/groups/:group/pay', '/counter/bookings', '/counter/settle/:group', '/counter/void/:ref',
+    '/my/bookings/:ref/reschedule', '/my/bookings/:ref/cancel', '/operator/settlements', '/trips/:id/waitlist']) api.post(path, once);
   api.use(accountRoutes(db));
   api.use(publicRoutes(db));
   api.use(operatorRoutes(db));

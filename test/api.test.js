@@ -932,3 +932,29 @@ test('payment prompts to one number are rate-limited', async () => {
   const r = await api('POST', '/api/groups/GNOTHING/pay', { body: { method: 'mtn', msisdn: '0961999999' } });
   assert.equal(r.status, 429);
 });
+
+/* ---------------- Security step 8: idempotency ---------------- */
+test('the same booking request sent twice (double tap / retry) creates one booking', async () => {
+  const t = (await api('GET', `/api/search?from=Lusaka&to=Livingstone&date=${addDays(localDate(), 6)}`)).body.outbound[0];
+  const seats = await freeSeats(t.trip_id, 1);
+  const hold = (await api('POST', `/api/trips/${t.trip_id}/holds`, { body: { seats } })).body;
+  const body = { legs: [{ trip_id: t.trip_id, hold_token: hold.hold_token, from_stop_id: t.boarding_points[0].stop_id, to_stop_id: t.dropping_points.at(-1).stop_id, passengers: pax(seats) }],
+    contact: { name: 'Tapper', phone: '0961565656' }, payment_method: 'mtn' };
+  const headers = { 'Idempotency-Key': 'test-key-booking-0001' };
+  const [a, b] = await Promise.all([api('POST', '/api/bookings', { body, headers }), api('POST', '/api/bookings', { body, headers })]);
+  const codes = [a.status, b.status].sort();
+  assert.ok(codes[0] === 201 && (codes[1] === 201 || codes[1] === 409), `got ${codes}`);
+  const replay = await api('POST', '/api/bookings', { body, headers });
+  assert.equal(replay.status, 201);
+  assert.equal(replay.headers.get('idempotent-replayed'), 'true');
+  assert.equal(replay.body.group_ref, (a.status === 201 ? a : b).body.group_ref, 'same booking returned');
+  assert.equal(db.prepare("SELECT COUNT(DISTINCT group_ref) n FROM bookings WHERE contact_phone = '260961565656'").get().n, 1);
+  const other = await api('POST', '/api/bookings', { body: { ...body, contact: { name: 'Other', phone: '0961565657' } }, headers });
+  assert.equal(other.status, 422, 'a key cannot be reused for a different request');
+  // Paying twice with the same key starts one payment
+  const g = replay.body.group_ref, ph = { 'Idempotency-Key': 'test-key-pay-0001' };
+  const p1 = await api('POST', `/api/groups/${g}/pay`, { body: { method: 'mtn', msisdn: '0961565656' }, headers: ph });
+  const p2 = await api('POST', `/api/groups/${g}/pay`, { body: { method: 'mtn', msisdn: '0961565656' }, headers: ph });
+  assert.equal(p1.body.payment_id, p2.body.payment_id);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM payments WHERE group_ref = ?').get(g).n, 1);
+});

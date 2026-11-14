@@ -330,7 +330,7 @@ export async function checkout(app) {
     e.preventDefault();
     const v = formData(f);
     busy($('#book', app), async () => {
-      const r = await api('/bookings', { method: 'POST', body: {
+      const r = await api('/bookings', { method: 'POST', idem: 'booking', body: {
         legs: c.legs.map((l, i) => ({ trip_id: l.trip.trip_id, hold_token: l.hold.token, from_stop_id: l.from_stop_id, to_stop_id: l.to_stop_id, passengers: passengers(i, v) })),
         contact: { name: v.cname, phone: v.cphone, email: v.cemail }, promo_code: v.promo || undefined, payment_method: v.pm, redeem_points: ptsToUse || undefined, lang: getLang() } });
       cart.set(null);
@@ -391,7 +391,7 @@ export async function pay(app, group) {
         e.preventDefault();
         busy(pf.querySelector('button'), async () => {
           const v = formData(pf);
-          const r = await api(`/groups/${group}/pay`, { method: 'POST', body: v });
+          const r = await api(`/groups/${group}/pay`, { method: 'POST', idem: 'pay-' + group, body: v });
           if (r.sandbox) toast('Sandbox payment: no real money moves. Numbers ending 0000 or 1111 simulate a failure.');
           if (r.redirect_url) { location.href = `${r.redirect_url}&group=${group}&pid=${r.payment_id}`; return; }
           await draw();
@@ -490,7 +490,7 @@ async function cancelFlow(t, done) {
     <div class="tablewrap"><table><thead><tr><th>Cancel at least</th><th>Refund</th></tr></thead><tbody>${q.policy.map(p => html`<tr><td>${p.hours} hours before</td><td>${p.pct}%</td></tr>`)}</tbody></table></div>
     <div class="sumrow total"><span>Refund to your ${t.payment_method === 'card' ? 'card' : 'wallet'}</span><span class="num">${kwacha(q.amount)}</span></div>
     <div class="row" style="justify-content:flex-end"><button class="btn ghost" data-close>Keep booking</button><button class="btn danger" id="yes">Cancel and refund ${kwacha(q.amount)}</button></div>`);
-  $('#yes', m.el).addEventListener('click', e => busy(e.target, async () => { const r = await api(`/my/bookings/${t.ref}/cancel`, { method: 'POST' }); m.close(); toast(`Cancelled. Refund ${kwacha(r.refund)} started.`); done(); }));
+  $('#yes', m.el).addEventListener('click', e => busy(e.target, async () => { const r = await api(`/my/bookings/${t.ref}/cancel`, { method: 'POST', idem: 'cancel-' + t.ref }); m.close(); toast(`Cancelled. Refund ${kwacha(r.refund)} started.`); done(); }));
 }
 function rateFlow(t, done) {
   const stars = name => html`<label class="field"><span>${name[0].toUpperCase() + name.slice(1)}</span><select name="${name}">${[5, 4, 3, 2, 1].map(n => html`<option value="${n}">${'★'.repeat(n)}${'☆'.repeat(5 - n)}</option>`)}</select></label>`;
@@ -535,7 +535,7 @@ export async function reschedule(app, ref) {
     $('#pick', app).innerHTML = html`<div class="card"><h3>Pick ${n} seat${n > 1 ? 's' : ''}</h3><div id="map"></div><div class="row" style="justify-content:flex-end"><button class="btn copper" id="go" disabled>Move my booking</button></div></div>`;
     picker = seatPicker($('#map', app), { tripId, max: n, onChange: h => { $('#go', app).disabled = h.seats.length !== n; } });
     $('#go', app).addEventListener('click', ev => busy(ev.target, async () => {
-      const r = await api(`/my/bookings/${ref}/reschedule`, { method: 'POST', body: { trip_id: tripId, hold_token: picker.token, seats: picker.seats } });
+      const r = await api(`/my/bookings/${ref}/reschedule`, { method: 'POST', idem: 'reschedule-' + ref, body: { trip_id: tripId, hold_token: picker.token, seats: picker.seats } });
       toast(r.status === 'confirmed' ? `Moved. New booking ${r.ref}.${r.refund ? ` ${kwacha(r.refund)} refunded.` : ''}` : `Pay ${kwacha(r.total)} to confirm the change.`);
       location.hash = r.status === 'confirmed' ? '#/trips' : '#/pay/' + r.group_ref;
     }));

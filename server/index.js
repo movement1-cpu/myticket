@@ -6,7 +6,7 @@ import { dispatch } from './services/notify.js';
 import { seedDemo } from './seed.js';
 import { sendReminders } from './services/maintenance.js';
 import { sendDepartureReminders } from './services/reminders.js';
-import { pruneRateLimits, protectStoredIds } from './security.js';
+import { pruneRateLimits, protectStoredIds, pruneIdempotency } from './security.js';
 import { backupNow, pruneBackups } from './backup.js';
 
 const db = openDb();
@@ -24,7 +24,7 @@ app.listen(config.port, () => console.log(`MyTicket running on ${config.baseUrl}
 
 // Background jobs: release expired seat holds and unpaid bookings, send queued SMS/WhatsApp/email.
 setInterval(() => { try { sweep(db); } catch (e) { console.error('sweep', e); } }, 20_000);
-setInterval(() => { try { pruneRateLimits(db); } catch (e) { console.error('prune', e); } }, 3_600_000);
+setInterval(() => { try { pruneRateLimits(db); pruneIdempotency(db); } catch (e) { console.error('prune', e); } }, 3_600_000);
 setInterval(() => dispatch(db).catch(e => console.error('dispatch', e)), 5_000);
 // Daily maintenance / document-expiry SMS to each bus company owner (checked hourly, sent once a day).
 setInterval(() => { try { sendReminders(db); } catch (e) { console.error('reminders', e); } }, 3_600_000);

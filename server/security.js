@@ -119,3 +119,39 @@ export function protectStoredIds(db) {
   try { for (const r of rows) up.run(...protectId(r.id_type, r.id_number), r.id); db.exec('COMMIT'); } catch (e) { db.exec('ROLLBACK'); throw e; }
   return rows.length;
 }
+
+/* ---------- idempotency: a retried or double-tapped request is answered once ---------- */
+/**
+ * If the client sends "Idempotency-Key: <random>", the first response is stored for 24 hours and replayed for any repeat
+ * with the same key (and the same body). A repeat that arrives while the first is still running gets 409.
+ * Server errors (5xx) are not stored, so the client can safely retry.
+ */
+export function idempotent(db) {
+  return (req, res, next) => {
+    const key = req.get('idempotency-key');
+    if (!key) return next();
+    if (!/^[\w-]{8,100}$/.test(key)) return next(new HttpError(400, 'Idempotency-Key must be 8–100 letters, digits, - or _.'));
+    const scope = req.user ? `u${req.user.id}` : `ip${req.ip}`;
+    const endpoint = `${req.method} ${req.baseUrl}${req.path}`;
+    const bodyHash = sha256(JSON.stringify(req.body || {}));
+    const row = db.prepare('SELECT * FROM idempotency_keys WHERE key = ? AND scope = ? AND endpoint = ?').get(key, scope, endpoint);
+    if (row) {
+      if (row.body_hash !== bodyHash) return next(new HttpError(422, 'This request key was already used for a different request.', 'idempotency_mismatch'));
+      if (row.status == null) return next(new HttpError(409, 'This request is still being processed. Wait a moment.', 'in_progress'));
+      res.set('Idempotent-Replayed', 'true');
+      return res.status(row.status).type('json').send(row.response);
+    }
+    db.prepare('INSERT INTO idempotency_keys (key, scope, endpoint, body_hash) VALUES (?,?,?,?)').run(key, scope, endpoint, bodyHash);
+    const json = res.json.bind(res);
+    res.json = body => {
+      if (res.statusCode < 500) db.prepare('UPDATE idempotency_keys SET status = ?, response = ? WHERE key = ? AND scope = ? AND endpoint = ?').run(res.statusCode, JSON.stringify(body), key, scope, endpoint);
+      else db.prepare('DELETE FROM idempotency_keys WHERE key = ? AND scope = ? AND endpoint = ?').run(key, scope, endpoint);
+      return json(body);
+    };
+    res.on('close', () => { // the handler died without answering: let the client retry
+      db.prepare('DELETE FROM idempotency_keys WHERE key = ? AND scope = ? AND endpoint = ? AND status IS NULL').run(key, scope, endpoint);
+    });
+    next();
+  };
+}
+export function pruneIdempotency(db) { db.prepare("DELETE FROM idempotency_keys WHERE created_at < datetime('now', '-1 day')").run(); }

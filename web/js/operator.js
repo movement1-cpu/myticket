@@ -241,7 +241,7 @@ async function counter(main) {
       ev.preventDefault();
       const v = formData(f);
       busy($('#sell', main), async () => {
-        const r = await api('/counter/bookings', { method: 'POST', body: { payment_method: v.pm, contact: { name: v.name0, phone: v.phone },
+        const r = await api('/counter/bookings', { method: 'POST', idem: 'counter-sale', body: { payment_method: v.pm, contact: { name: v.name0, phone: v.phone },
           legs: [{ trip_id: trip.id, hold_token: picker.token, from_stop_id: Number(v.from), to_stop_id: Number(v.to),
             passengers: picker.seats.map((s, i) => ({ seat_no: s, name: v['name' + i], id_type: v['idt' + i], id_number: v['idn' + i], gender: v['g' + i], is_child: !!v['child' + i], luggage: readLuggage(v, i) })) }] } });
         const ref = r.bookings[0].ref;
@@ -261,7 +261,7 @@ async function counter(main) {
         <td>${b.seats.filter(s => s.active).map(s => html`<div>${s.seat_no} ${s.passenger_name} <span class="small muted">· ${s.luggage.text}</span></div>`)}</td><td>${pill(b.status)}</td><td class="r">${kwacha(b.total)}</td>
         <td><div class="row" style="gap:4px;flex-wrap:nowrap">${['confirmed', 'reserved', 'completed'].includes(b.status) ? html`<button class="btn ghost sm" data-print="${b.ref}">Print</button>` : ''}${b.status === 'confirmed' && b.payment_method === 'cash' && b.channel !== 'web' ? html`<button class="btn danger sm" data-void="${b.ref}">Void</button>` : ''}</div></td></tr>`)}</tbody></table></div>
       ${due ? html`<button class="btn copper" id="settle">Take ${kwacha(due)} cash, confirm and print</button>` : ''}`;
-    $('#settle', main)?.addEventListener('click', ev => busy(ev.target, async () => { await api('/counter/settle/' + r.group_ref, { method: 'POST' }); toast('Paid. Ticket sent by SMS.'); r.bookings.forEach(b => printTicket(b.ref)); lk.requestSubmit(); }));
+    $('#settle', main)?.addEventListener('click', ev => busy(ev.target, async () => { await api('/counter/settle/' + r.group_ref, { method: 'POST', idem: 'settle-' + r.group_ref }); toast('Paid. Ticket sent by SMS.'); r.bookings.forEach(b => printTicket(b.ref)); lk.requestSubmit(); }));
   }); });
   main.addEventListener('click', e => {
     const b = e.target.closest('[data-print]'); if (b) { printTicket(b.dataset.print); toast(`Printing ${b.dataset.print}…`); }
@@ -273,7 +273,7 @@ async function counter(main) {
           <div class="row" style="justify-content:flex-end"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn danger">Void and return cash</button></div></form>`);
       const f = $('#vf', m.el);
       f.addEventListener('submit', ev => { ev.preventDefault(); busy(f.querySelector('.danger'), async () => {
-        const r = await api('/counter/void/' + v.dataset.void, { method: 'POST', body: formData(f) });
+        const r = await api('/counter/void/' + v.dataset.void, { method: 'POST', idem: 'void-' + v.dataset.void, body: formData(f) });
         m.close(); toast(`Voided. Give back ${kwacha(r.cash_returned)} in cash.`); drawShift(); $('#lk', main).requestSubmit();
       }); });
     }
@@ -593,7 +593,7 @@ async function finance(main, days = 30) {
     <div class="card"><h3>Occupancy by route</h3><div class="tablewrap"><table><thead><tr><th>Route</th><th class="r">Trips</th><th class="r">Seats sold</th><th>Full</th></tr></thead><tbody>${f.routes.map(r => html`<tr><td>${r.name}</td><td class="r num">${r.trips}</td><td class="r num">${r.seats}</td><td style="min-width:160px">${raw(meter(r.occupancy))}</td></tr>`)}</tbody></table></div></div>`;
   $('#days', main).addEventListener('change', e => finance(main, Number(e.target.value)));
   const wf = $('#wf', main);
-  wf.addEventListener('submit', e => { e.preventDefault(); busy(wf.querySelector('button'), async () => { await api('/operator/settlements', { method: 'POST', body: { amount: Number(wf.amount.value) } }); toast('Payout requested.'); finance(main, days); }); });
+  wf.addEventListener('submit', e => { e.preventDefault(); busy(wf.querySelector('button'), async () => { await api('/operator/settlements', { method: 'POST', idem: 'payout', body: { amount: Number(wf.amount.value) } }); toast('Payout requested.'); finance(main, days); }); });
 }
 
 /* ---------- cash & shifts ---------- */

@@ -376,6 +376,13 @@ CREATE TABLE IF NOT EXISTS recovery_codes (
   id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), code_hash TEXT NOT NULL, used_at TEXT
 );
 
+-- Idempotency: the first answer to a request key is replayed for retries (no double bookings or charges).
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+  key TEXT NOT NULL, scope TEXT NOT NULL, endpoint TEXT NOT NULL, body_hash TEXT NOT NULL,
+  status INTEGER, response TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (key, scope, endpoint)
+);
+
 -- Cash accountability at station counters.
 CREATE TABLE IF NOT EXISTS cash_shifts (
   id INTEGER PRIMARY KEY,

@@ -33,13 +33,28 @@ export const auth = {
 
 /* ---------- API ---------- */
 export class ApiError extends Error { constructor(status, body) { super(body?.error || `Request failed (${status})`); this.status = status; this.code = body?.code; } }
-export async function api(path, { method = 'GET', body, headers = {} } = {}) {
+/**
+ * Idempotency: pass `idem: '<action name>'` for anything that books, pays or moves cash. The same key is reused until
+ * the server answers (so a retry after a dropped connection cannot book or charge twice), then a fresh one is made.
+ */
+const IDEM = 'mt.idem.';
+function idemKey(scope) {
+  let k = null;
+  try { k = sessionStorage.getItem(IDEM + scope); } catch {}
+  if (!k) { k = crypto.randomUUID(); try { sessionStorage.setItem(IDEM + scope, k); } catch {} }
+  return k;
+}
+const idemDone = scope => { try { sessionStorage.removeItem(IDEM + scope); } catch {} };
+
+export async function api(path, { method = 'GET', body, headers = {}, idem = null } = {}) {
+  if (idem) headers = { ...headers, 'Idempotency-Key': idemKey(idem) };
   const res = await fetch('/api' + path, {
     method, credentials: 'same-origin',
     // X-MT-CSRF: the server refuses cookie-authenticated changes without it (other sites cannot add it).
     headers: { 'X-MT-CSRF': '1', ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers },
     body: body ? JSON.stringify(body) : undefined,
   });
+  if (idem && res.status !== 409) idemDone(idem); // answered (409 = still processing: keep the key and try again)
   const ct = res.headers.get('content-type') || '';
   const data = ct.includes('json') ? await res.json() : await res.blob();
   if (res.status === 401 && auth.user && !path.startsWith('/auth/') && path !== '/me' && !location.pathname.startsWith('/agent')) {
