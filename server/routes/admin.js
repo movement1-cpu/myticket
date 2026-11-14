@@ -236,8 +236,8 @@ export default function adminRoutes(db) {
     if (!(pct > 0 && pct <= 50)) throw bad('Platform promos are between 1% and 50%.');
     if ((req.body.start_date && !isDate(req.body.start_date)) || (req.body.end_date && !isDate(req.body.end_date))) throw bad('Dates must be YYYY-MM-DD.');
     try {
-      res.status(201).json(db.prepare("INSERT INTO pricing_rules (operator_id, kind, name, pct, code, start_date, end_date, max_uses) VALUES (NULL,'promo',?,?,?,?,?,?) RETURNING *")
-        .get(req.body.name.trim(), pct, code, req.body.start_date || null, req.body.end_date || null, req.body.max_uses ? Number(req.body.max_uses) : null));
+      res.status(201).json(db.prepare("INSERT INTO pricing_rules (operator_id, kind, name, pct, code, start_date, end_date, max_uses, per_phone_limit) VALUES (NULL,'promo',?,?,?,?,?,?,?) RETURNING *")
+        .get(req.body.name.trim(), pct, code, req.body.start_date || null, req.body.end_date || null, req.body.max_uses ? Number(req.body.max_uses) : null, req.body.per_phone_limit === '' || req.body.per_phone_limit == null ? 1 : Number(req.body.per_phone_limit) || null));
     } catch (e) { if (String(e.message).includes('UNIQUE')) throw conflict('That promo code already exists.'); throw e; }
   });
   r.put('/admin/promos/:id', admin, (req, res) => {

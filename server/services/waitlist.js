@@ -27,6 +27,7 @@ export function joinWaitlist(db, { tripId, fromStopId, toStopId, seats, name, ph
   const from = st(fromStopId), to = st(toStopId);
   if (!from || !to || to.seq <= from.seq) throw bad('Pick where you get on and off.');
   if (db.prepare("SELECT 1 FROM waitlist WHERE trip_id = ? AND phone = ? AND status IN ('waiting','offered')").get(trip.id, p)) throw conflict('This number is already on the waitlist for this bus.');
+  if (db.prepare("SELECT COUNT(*) n FROM waitlist WHERE phone = ? AND status IN ('waiting','offered')").get(p).n >= 3) throw conflict('This number is already waiting for 3 buses. Leave one waitlist first.');
   const free = seatMap(db, trip.id).decks.flatMap(d => d.rows.flat()).filter(s => s && s.status === 'available').length;
   const queued = db.prepare("SELECT COUNT(*) n FROM waitlist WHERE trip_id = ? AND status = 'waiting'").get(trip.id).n;
   if (free >= seats && !queued) throw conflict(`${free} seat${free === 1 ? ' is' : 's are'} free on this bus. Book them now instead of waiting.`, 'seats_available');

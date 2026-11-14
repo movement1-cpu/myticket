@@ -440,8 +440,8 @@ export default function operatorRoutes(db) {
     const code = b.kind === 'promo' ? String(b.code || '').trim().toUpperCase() : null;
     if (b.kind === 'promo' && !/^[A-Z0-9]{4,16}$/.test(code)) throw bad('Promo codes are 4–16 letters or digits.');
     try {
-      res.status(201).json(db.prepare(`INSERT INTO pricing_rules (operator_id, kind, name, pct, code, start_date, end_date, max_uses) VALUES (?,?,?,?,?,?,?,?) RETURNING *`)
-        .get(req.operatorId, b.kind, b.name.trim(), pct, code, b.start_date || null, b.end_date || null, b.max_uses ? Number(b.max_uses) : null));
+      res.status(201).json(db.prepare(`INSERT INTO pricing_rules (operator_id, kind, name, pct, code, start_date, end_date, max_uses, per_phone_limit) VALUES (?,?,?,?,?,?,?,?,?) RETURNING *`)
+        .get(req.operatorId, b.kind, b.name.trim(), pct, code, b.start_date || null, b.end_date || null, b.max_uses ? Number(b.max_uses) : null, b.kind === 'promo' ? (b.per_phone_limit === '' || b.per_phone_limit == null ? 1 : Number(b.per_phone_limit) || null) : null));
     } catch (e) { if (String(e.message).includes('UNIQUE')) throw conflict('That promo code is already in use.'); throw e; }
   });
   r.put('/operator/pricing/:id', ...ownerOps, (req, res) => {

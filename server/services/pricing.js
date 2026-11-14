@@ -20,7 +20,7 @@ export function operatorTerms(db, operatorId) {
 }
 
 /** Look up a promo code valid for this operator today. Returns the rule or throws a clear error. */
-export function findPromo(db, code, operatorId) {
+export function findPromo(db, code, operatorId, phone = null) {
   if (!code) return null;
   const r = db.prepare('SELECT * FROM pricing_rules WHERE kind = ? AND code = ?').get('promo', String(code).trim().toUpperCase());
   const today = localDate();
@@ -28,6 +28,10 @@ export function findPromo(db, code, operatorId) {
   if (r.operator_id && r.operator_id !== operatorId) throw bad(`Promo code ${code} does not apply to this bus company.`, 'promo_code');
   if ((r.start_date && today < r.start_date) || (r.end_date && today > r.end_date)) throw bad(`Promo code ${code} has expired.`, 'promo_code');
   if (r.max_uses != null && r.used >= r.max_uses) throw bad(`Promo code ${code} has been fully used.`, 'promo_code');
+  if (r.per_phone_limit != null && phone) {
+    const used = db.prepare("SELECT COUNT(DISTINCT group_ref) n FROM bookings WHERE promo_code = ? AND contact_phone = ? AND status != 'expired'").get(r.code, phone).n; // a cancelled or rescheduled booking still used the promo
+    if (used >= r.per_phone_limit) throw bad(`Promo code ${code} can be used ${r.per_phone_limit === 1 ? 'once' : `${r.per_phone_limit} times`} per phone number.`, 'promo_code');
+  }
   return r;
 }
 

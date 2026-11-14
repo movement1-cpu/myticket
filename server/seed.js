@@ -144,7 +144,7 @@ export function seedDemo(db) {
     const year = today.slice(0, 4);
     db.prepare("INSERT INTO pricing_rules (operator_id, kind, name, pct, start_date, end_date) VALUES (?, 'peak', 'Christmas & New Year', 20, ?, ?)").run(ops[Z], `${year}-12-18`, `${Number(year) + 1}-01-05`);
     db.prepare("INSERT INTO pricing_rules (operator_id, kind, name, pct, code, max_uses) VALUES (?, 'promo', 'Zambezi loyalty', 15, 'ZAMBEZI15', 200)").run(ops[Z]);
-    db.prepare("INSERT INTO pricing_rules (operator_id, kind, name, pct, code, max_uses) VALUES (NULL, 'promo', 'Platform launch', 10, 'KWACHA10', 500)").run();
+    db.prepare("INSERT INTO pricing_rules (operator_id, kind, name, pct, code, max_uses, per_phone_limit) VALUES (NULL, 'promo', 'Platform launch', 10, 'KWACHA10', 500, 1)").run();
 
     // Extra passengers for analytics
     const names = ['Mwansa Chileshe', 'Bupe Mulenga', 'Thandiwe Banda', 'Chipo Daka', 'Kunda Musonda', 'Lubasi Imasiku', 'Mapalo Ngoma', 'Chisomo Phiri', 'Inonge Mwiinga', 'Kalaba Mutale', 'Taonga Lungu', 'Mubanga Kapata'];

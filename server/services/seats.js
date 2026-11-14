@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { tx, setting } from '../db.js';
-import { bad, conflict, notFound, addMinutes } from '../util.js';
+import { bad, conflict, notFound, addMinutes, HttpError } from '../util.js';
 import { seatChanged } from './events.js';
 
 export const MAX_SEATS = 6;
@@ -34,7 +34,10 @@ export function seatMap(db, tripId, holdToken) {
  * Runs in BEGIN IMMEDIATE so concurrent requests are serialised; the seat_holds primary key
  * and the partial unique index on booking_seats are the final guard.
  */
-export function holdSeats(db, { tripId, seats, token, userId }) {
+/** Seats one network (IP) or one signed-in passenger may hold at the same time, across all trips. Staff are exempt. */
+export const MAX_HELD_PER_CLIENT = 12;
+
+export function holdSeats(db, { tripId, seats, token, userId, ip = null, staff = false }) {
   if (!Array.isArray(seats) || seats.length === 0) throw bad('Pick at least one seat.');
   if (seats.length > MAX_SEATS) throw bad(`You can book up to ${MAX_SEATS} seats at a time.`);
   if (new Set(seats).size !== seats.length) throw bad('The same seat was picked twice.');
@@ -50,11 +53,15 @@ export function holdSeats(db, { tripId, seats, token, userId }) {
 
   const result = tx(db, () => {
     db.prepare('DELETE FROM seat_holds WHERE trip_id = ? AND (expires_at <= ? OR hold_token = ?)').run(tripId, now, token);
+    if (!staff) {
+      const held = db.prepare('SELECT COUNT(*) n FROM seat_holds WHERE expires_at > ? AND ((ip IS NOT NULL AND ip = ?) OR (user_id IS NOT NULL AND user_id = ?))').get(now, ip, userId ?? -1).n;
+      if (held + seats.length > MAX_HELD_PER_CLIENT) throw new HttpError(429, `You are already holding ${held} seats. Finish or cancel those bookings first.`, 'too_many_holds');
+    }
     const isBooked = db.prepare('SELECT 1 FROM booking_seats WHERE trip_id = ? AND seat_no = ? AND active = 1');
-    const ins = db.prepare('INSERT INTO seat_holds (trip_id, seat_no, hold_token, user_id, expires_at) VALUES (?,?,?,?,?)');
+    const ins = db.prepare('INSERT INTO seat_holds (trip_id, seat_no, hold_token, user_id, expires_at, ip) VALUES (?,?,?,?,?,?)');
     for (const s of seats.map(String)) {
       if (isBooked.get(tripId, s)) throw conflict(`Seat ${s} was just booked by someone else. Pick another seat.`, 'seat_taken');
-      try { ins.run(tripId, s, token, userId ?? null, expires); }
+      try { ins.run(tripId, s, token, userId ?? null, expires, ip); }
       catch (e) {
         if (String(e.message).includes('UNIQUE') || String(e.message).includes('PRIMARY')) throw conflict(`Seat ${s} is being booked by someone else right now. Pick another seat.`, 'seat_locked');
         throw e;

@@ -1,5 +1,5 @@
 import { tx, setting } from '../db.js';
-import { bad, conflict, notFound, forbidden, ref, uniqueRef, money, addMinutes, normPhone, networkOf, localTime, localDate } from '../util.js';
+import { bad, conflict, notFound, forbidden, HttpError, ref, uniqueRef, money, addMinutes, normPhone, networkOf, localTime, localDate } from '../util.js';
 import { config } from '../config.js';
 import { layoutForTrip } from './seats.js';
 import { priceLeg, findPromo, refundQuote, operatorTerms } from './pricing.js';
@@ -63,6 +63,13 @@ export function createBookings(db, { legs, contact, promo_code, payment_method, 
   const now = new Date();
   const reserveMin = Number(setting(db, 'reserve_minutes'));
   const language = langFor(db, { lang, user, phone });
+  if (channel === 'web') {
+    // Anti-hoarding: unpaid bookings tie up seats, so a phone number can only have a few at once.
+    const unpaid = db.prepare("SELECT COUNT(DISTINCT group_ref) n FROM bookings WHERE contact_phone = ? AND status IN ('pending_payment','reserved')").get(phone).n;
+    if (unpaid >= 3) throw new HttpError(429, 'This phone number already has 3 unpaid bookings. Pay for or cancel one first.', 'too_many_unpaid');
+    const lastHour = db.prepare("SELECT COUNT(DISTINCT group_ref) n FROM bookings WHERE contact_phone = ? AND channel = 'web' AND created_at > datetime('now', '-1 hour')").get(phone).n;
+    if (lastHour >= 6) throw new HttpError(429, 'Too many bookings for this phone number in the last hour. Try again later or book at the station.', 'too_many_bookings');
+  }
   let pointsLeft = checkRedeem(db, user, redeem_points);
   const out = tx(db, () => {
     const created = [];
@@ -80,7 +87,7 @@ export function createBookings(db, { legs, contact, promo_code, payment_method, 
       const heldNos = new Set(holds.filter(h => h.expires_at > now.toISOString()).map(h => h.seat_no));
       if (seatNos.some(s => !heldNos.has(s))) throw conflict('Your seat selection expired. Pick your seats again.', 'hold_expired');
 
-      const promo = findPromo(db, promo_code, trip.operator_id);
+      const promo = findPromo(db, promo_code, trip.operator_id, phone);
       const price = priceLeg(db, { trip, fromStop: from, toStop: to, passengers: leg.passengers, promo });
       const status = payment_method === 'cash' ? 'confirmed' : payment_method === 'station' ? 'reserved' : 'pending_payment';
       const expires = status === 'confirmed' ? null

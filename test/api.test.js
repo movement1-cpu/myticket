@@ -885,3 +885,50 @@ test('owner can sign a staff member out of every device (lost phone); deactivati
   tokens.conductor = await login('0970000004');
   await api('POST', '/api/counter/shift/open', { token: tokens.conductor, body: { opening_float: 0 } });
 });
+
+/* ---------------- Security step 7: anti-abuse ---------------- */
+test('anti-hoarding: one network can hold at most 12 seats at once; staff are exempt', async () => {
+  db.prepare('DELETE FROM seat_holds').run();
+  const d = addDays(localDate(), 6);
+  const t = await firstTrip('Lusaka', 'Kitwe', d);
+  const other = (await api('GET', `/api/search?from=Lusaka&to=Livingstone&date=${d}`)).body.outbound[0];
+  const a = await freeSeats(t.trip_id, 6), b = await freeSeats(other.trip_id, 6);
+  assert.equal((await api('POST', `/api/trips/${t.trip_id}/holds`, { body: { seats: a } })).status, 200);
+  assert.equal((await api('POST', `/api/trips/${other.trip_id}/holds`, { body: { seats: b } })).status, 200);
+  const third = await api('POST', `/api/trips/${other.trip_id}/holds`, { body: { seats: [ (await freeSeats(other.trip_id, 1))[0] ] } });
+  assert.equal(third.status, 429);
+  assert.equal(third.body.code, 'too_many_holds');
+  const staff = await api('POST', `/api/trips/${other.trip_id}/holds`, { token: tokens.clerk, body: { seats: await freeSeats(other.trip_id, 1) } });
+  assert.equal(staff.status, 200, 'station staff are not limited');
+  db.prepare('DELETE FROM seat_holds').run();
+});
+
+test('a phone number can have at most 3 unpaid bookings', async () => {
+  const d = addDays(localDate(), 6);
+  const t = await firstTrip('Lusaka', 'Kitwe', d);
+  const book = async () => {
+    const seats = await freeSeats(t.trip_id, 1);
+    const hold = (await api('POST', `/api/trips/${t.trip_id}/holds`, { body: { seats } })).body;
+    return api('POST', '/api/bookings', { body: { legs: [{ trip_id: t.trip_id, hold_token: hold.hold_token, from_stop_id: t.boarding_points[0].stop_id, to_stop_id: t.dropping_points.at(-1).stop_id, passengers: pax(seats) }],
+      contact: { name: 'Hoarder', phone: '0961717171' }, payment_method: 'station' } });
+  };
+  for (let i = 0; i < 3; i++) assert.equal((await book()).status, 201);
+  const fourth = await book();
+  assert.equal(fourth.status, 429);
+  assert.equal(fourth.body.code, 'too_many_unpaid');
+  db.prepare('DELETE FROM seat_holds').run();
+});
+
+test('promo codes can be limited per phone number', async () => {
+  const t = await firstTrip('Lusaka', 'Kitwe', addDays(localDate(), 6));
+  const q = (phone) => api('POST', '/api/quote', { body: { trip_id: t.trip_id, from_stop_id: t.boarding_points[0].stop_id, to_stop_id: t.dropping_points.at(-1).stop_id, promo_code: 'KWACHA10', phone } });
+  assert.equal((await q('0961234567')).status, 400, 'this number already used KWACHA10 earlier in the tests');
+  assert.match((await q('0961234567')).body.error, /once per phone/);
+  assert.equal((await q('0961888777')).status, 200, 'a new number can still use it');
+});
+
+test('payment prompts to one number are rate-limited', async () => {
+  for (let i = 0; i < 8; i++) db.prepare("INSERT INTO rate_limits (key, window_start, count) VALUES ('pay:msisdn:260961999999', strftime('%s','now'), 8) ON CONFLICT(key) DO UPDATE SET count = 8, window_start = strftime('%s','now')").run();
+  const r = await api('POST', '/api/groups/GNOTHING/pay', { body: { method: 'mtn', msisdn: '0961999999' } });
+  assert.equal(r.status, 429);
+});

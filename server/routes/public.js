@@ -91,7 +91,9 @@ export default function publicRoutes(db) {
   });
 
   r.post('/trips/:id/holds', (req, res) => {
-    res.json(holdSeats(db, { tripId: Number(req.params.id), seats: req.body.seats, token: req.body.hold_token, userId: req.user?.id }));
+    rateLimit(db, `holds:${req.ip}`, 120, 600, 'Too many seat changes. Slow down a little.');
+    const staff = ['clerk', 'conductor', 'operator', 'admin'].includes(req.user?.role);
+    res.json(holdSeats(db, { tripId: Number(req.params.id), seats: req.body.seats, token: req.body.hold_token, userId: req.user?.id, ip: req.ip, staff }));
   });
   /* ---------- waitlist for full buses ---------- */
   r.post('/trips/:id/waitlist', (req, res) => {
@@ -116,7 +118,7 @@ export default function publicRoutes(db) {
     const st = id => db.prepare('SELECT * FROM route_stops WHERE id = ? AND route_id = ?').get(id, trip.route_id);
     const from = st(from_stop_id), to = st(to_stop_id);
     if (!from || !to || to.seq <= from.seq) throw bad('Pick a boarding point before the dropping point.');
-    res.json(priceLeg(db, { trip, fromStop: from, toStop: to, passengers: passengers?.length ? passengers : [{}], promo: findPromo(db, promo_code, trip.operator_id) }));
+    res.json(priceLeg(db, { trip, fromStop: from, toStop: to, passengers: passengers?.length ? passengers : [{}], promo: findPromo(db, promo_code, trip.operator_id, req.body.phone ? (() => { try { return normPhone(req.body.phone); } catch { return null; } })() : null) }));
   });
 
   r.get('/trips/:id/track', (req, res) => {
@@ -128,6 +130,7 @@ export default function publicRoutes(db) {
   /* ---------- booking & payment (guests allowed; signed-in passengers get it in My trips) ---------- */
   r.post('/bookings', (req, res) => {
     if (req.user && req.user.role !== 'passenger') throw forbidden('Staff sell tickets from the counter screen.');
+    rateLimit(db, `book:ip:${req.ip}`, 20, 3600, 'Too many bookings from this network. Try again later.');
     res.status(201).json(createBookings(db, { ...req.body, user: req.user, channel: 'web' }));
   });
 
@@ -139,6 +142,9 @@ export default function publicRoutes(db) {
     res.json({ group_ref: req.params.group, bookings: bs.map(b => ({ ref: b.ref, status: b.status, total: b.total, expires_at: b.expires_at, ticket: b.status === 'confirmed' ? ticketData(db, b.ref).url : null })), payments: pays });
   });
   r.post('/groups/:group/pay', async (req, res) => {
+    // Stop anyone flooding a phone with payment prompts.
+    rateLimit(db, `pay:${req.params.group}`, 5, 600, 'Too many payment attempts for this booking.');
+    if (req.body.msisdn) { try { rateLimit(db, `pay:msisdn:${normPhone(req.body.msisdn)}`, 8, 3600, 'Too many payment prompts sent to this number.'); } catch (e) { if (e.status === 429) throw e; } }
     res.json(await startPayment(db, { group_ref: req.params.group, method: req.body.method, msisdn: req.body.msisdn }));
   });
   r.get('/payments/:id', async (req, res) => {

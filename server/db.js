@@ -489,7 +489,9 @@ function migrate(db) {
   add('users', 'totp_enabled', 'INTEGER NOT NULL DEFAULT 0');
   add('users', 'admin_scope', "TEXT NOT NULL DEFAULT 'full'");
   add('booking_seats', 'id_hint', 'TEXT');
-  add('users', 'pin_hash', 'TEXT'); // supervisor PIN (company owners) for approving voids // masked ID shown on screens; id_number itself is encrypted
+  add('users', 'pin_hash', 'TEXT');
+  add('seat_holds', 'ip', 'TEXT');                     // anti-hoarding: seats held per network
+  add('pricing_rules', 'per_phone_limit', 'INTEGER'); // promo uses allowed per phone number (NULL = no limit) // supervisor PIN (company owners) for approving voids // masked ID shown on screens; id_number itself is encrypted
 }
 
 /** Run fn inside a write transaction. BEGIN IMMEDIATE serialises writers, so check-then-insert is safe. */

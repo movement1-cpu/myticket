@@ -301,7 +301,7 @@ export async function checkout(app) {
     const v = formData(f);
     c.form = { ...v, usePoints }; cart.set(c);
     try {
-      const qs = await Promise.all(c.legs.map((l, i) => api('/quote', { method: 'POST', body: { trip_id: l.trip.trip_id, from_stop_id: l.from_stop_id, to_stop_id: l.to_stop_id, passengers: passengers(i, v), promo_code: promoOk || undefined } })));
+      const qs = await Promise.all(c.legs.map((l, i) => api('/quote', { method: 'POST', body: { trip_id: l.trip.trip_id, from_stop_id: l.from_stop_id, to_stop_id: l.to_stop_id, passengers: passengers(i, v), promo_code: promoOk || undefined, phone: v.cphone || undefined } })));
       const fare = qs.reduce((a, q) => a + q.fare_total, 0), disc = qs.reduce((a, q) => a + q.discount, 0), fee = qs.reduce((a, q) => a + q.booking_fee, 0), lug = qs.reduce((a, q) => a + q.luggage_fee, 0);
       // Same rule as the server: points pay at most max_pct of each leg's fare.
       let left = ptsInfo?.balance || 0, possible = 0;

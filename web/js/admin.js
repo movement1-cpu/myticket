@@ -190,12 +190,13 @@ async function promos(main) {
     <p class="small muted" style="margin:0">Platform promos work on every company and the discount comes out of the fare. Company promos are listed for reference.</p>
     <div class="tablewrap"><table><thead><tr><th>Code</th><th>Name</th><th>Company</th><th class="r">% off</th><th>Valid</th><th>Used</th><th></th></tr></thead><tbody>
       ${list.map(p => html`<tr style="${p.active ? '' : 'opacity:.55'}"><td class="mono"><b>${p.code}</b></td><td>${p.name}</td><td>${p.operator || 'All companies'}</td><td class="r num">${p.pct}</td>
-        <td class="small">${p.start_date || p.end_date ? `${p.start_date ? dayOf(p.start_date) : '…'} – ${p.end_date ? dayOf(p.end_date) : '…'}` : 'Always'}</td><td class="num">${p.used}${p.max_uses ? ' / ' + p.max_uses : ''}</td>
+        <td class="small">${p.start_date || p.end_date ? `${p.start_date ? dayOf(p.start_date) : '…'} – ${p.end_date ? dayOf(p.end_date) : '…'}` : 'Always'}</td><td class="num">${p.used}${p.max_uses ? ' / ' + p.max_uses : ''}${p.per_phone_limit ? html`<br><span class="small muted">${p.per_phone_limit}× per phone</span>` : ''}</td>
         <td>${p.operator ? '' : html`<button class="btn ghost sm" data-toggle="${p.id}" data-active="${p.active}">${p.active ? 'Turn off' : 'Turn on'}</button>`}</td></tr>`)}</tbody></table></div>`;
   $('#add', main).addEventListener('click', () => {
     const m = modal(html`<h2>New promo code</h2><form id="pf" class="grid2">
       <label class="field"><span>Code</span><input name="code" style="text-transform:uppercase" required></label><label class="field"><span>Name</span><input name="name" placeholder="Independence Day" required></label>
-      <label class="field"><span>% off fares</span><input name="pct" type="number" min="1" max="50" required></label><label class="field"><span>Maximum uses</span><input name="max_uses" type="number" min="1"></label>
+      <label class="field"><span>% off fares</span><input name="pct" type="number" min="1" max="50" required></label><label class="field"><span>Maximum uses in total</span><input name="max_uses" type="number" min="1"></label>
+      <label class="field"><span>Uses per phone number</span><input name="per_phone_limit" type="number" min="1" value="1"></label><div></div>
       <label class="field"><span>From</span><input name="start_date" type="date" min="${today()}"></label><label class="field"><span>To</span><input name="end_date" type="date" min="${today()}"></label>
       <div class="row" style="justify-content:flex-end;grid-column:1/-1"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn">Create</button></div></form>`);
     const f = $('#pf', m.el);

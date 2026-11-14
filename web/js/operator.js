@@ -526,7 +526,8 @@ async function pricing(main) {
       <label class="field" data-for="promo"><span>Code</span><input name="code" style="text-transform:uppercase"></label>
       <label class="field" data-for="peak promo"><span>From</span><input name="start_date" type="date"></label>
       <label class="field" data-for="peak promo"><span>To</span><input name="end_date" type="date"></label>
-      <label class="field" data-for="promo"><span>Maximum uses</span><input name="max_uses" type="number" min="1"></label>
+      <label class="field" data-for="promo"><span>Maximum uses in total</span><input name="max_uses" type="number" min="1"></label>
+      <label class="field" data-for="promo"><span>Uses per phone number</span><input name="per_phone_limit" type="number" min="1" value="1"></label>
       <div class="row" style="justify-content:flex-end;align-self:end;grid-column:1/-1"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn">Save rule</button></div></form>`);
     const f = $('#pf', m.el);
     const sync = () => $$('[data-for]', f).forEach(el => { el.hidden = !el.dataset.for.split(' ').includes(f.kind.value); });
