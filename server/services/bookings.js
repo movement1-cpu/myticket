@@ -11,6 +11,7 @@ import { checkRedeem, maxRedeemable, pointsValue, restorePoints, awardPoints } f
 import { logTripKm } from './maintenance.js';
 import { processWaitlist, markWaitlistBooked } from './waitlist.js';
 import { protectId, decrypt } from '../security.js';
+import { parcelWatch } from './parcels.js';
 import { t as tr, langFor } from '../i18n.js';
 import { providers } from './payments/providers.js';
 
@@ -328,4 +329,5 @@ export function sweep(db) {
     db.prepare("INSERT INTO audit_log (action, entity, entity_id, detail) VALUES ('bank_change_applied', 'operator', ?, ?)").run(String(c.operator_id), `account ending ${c.bank_account.slice(-4)}`);
   }
   processWaitlist(db);
+  parcelWatch(db);
 }

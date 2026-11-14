@@ -166,6 +166,7 @@ async function tripView(id) {
       <div class="bigbtns"><button class="btn copper" id="cam">Scan QR code</button><button class="btn ghost" id="manual">Type reference</button></div></div>
     <div class="card"><div class="head"><h3>On this bus</h3><div class="chips"><label class="chip"><input type="radio" name="view" value="bus" ${view === 'bus' ? 'checked' : ''}>Bus</label><label class="chip"><input type="radio" name="view" value="list" ${view === 'list' ? 'checked' : ''}>List</label></div></div>
       <div id="lugsum" class="small"></div><div id="seats"></div><div id="detail"></div></div>
+    <div class="card"><div class="head"><h3>Parcels on this bus</h3><span class="small muted">Scan each label when loading and unloading</span></div><div id="parcels"></div></div>
     <button class="btn" id="sos" style="background:var(--bad);color:#fff;padding:14px;font-size:16px">SOS: emergency on this bus</button>
     <div class="card"><h3>Trip status</h3><p class="small muted" style="margin:0">Passengers get an SMS for each change. Needs internet.</p>
       <div class="bigbtns"><button class="btn" data-st="boarding">Boarding</button><button class="btn" data-st="departed">Departed</button><button class="btn ghost" data-st="delayed">Delayed…</button><button class="btn ghost" data-st="arrived">Arrived</button></div>
@@ -201,6 +202,13 @@ async function tripView(id) {
         <span class="small">Luggage: ${s.luggage?.text || 'No luggage'}</span></span><span>${isBoarded(s) ? raw('<span class="pill ok">on</span>') : ''}</span></div>`).join('') : '<div class="empty">No passengers yet.</div>';
     }
   }
+  function drawParcels() {
+    const ps = m.parcels || [];
+    const lab = { received: 'not loaded yet', loaded: 'loaded', in_transit: 'on board', arrived: 'unloaded', collected: 'collected', missing: 'MISSING' };
+    $('#parcels').innerHTML = ps.length ? ps.map(p => html`<div class="pax"><span class="seatno" style="font-size:11px">${p.pieces}pc</span><span><b class="mono">${p.ref}</b><br>
+      <span class="small muted">${p.from_city} → ${p.to_city} · ${p.description}</span></span><span class="pill ${p.status === 'received' || p.status === 'missing' ? 'warn' : p.status === 'arrived' ? 'ok' : 'info'}">${lab[p.status] || p.status}</span></div>`).join('')
+      : '<div class="empty small">No parcels booked on this bus.</div>';
+  }
   function showSeat(no) {
     const p = bySeat().get(no);
     $('#detail').innerHTML = p ? html`<div class="notice" style="margin-top:8px"><b>Seat ${no}: ${p.passenger_name}</b>${p.is_child ? ' (child)' : ''} · ${isBoarded(p) ? 'boarded' : p.status === 'reserved' ? 'NOT PAID' : 'not yet boarded'}<br>
@@ -217,7 +225,7 @@ async function tripView(id) {
       fresh = new Set(next.seats.map(s => s.seat_no).filter(s => !before.has(s)));
       if (fresh.size) toast(`New booking: seat ${[...fresh].join(', ')}.`);
       m = next; local.set('manifest.' + id, m);
-      drawSeats();
+      drawSeats(); drawParcels();
     } catch (e) { guard(e); }
   }
   const timer = setInterval(() => vault.unlocked() ? refresh() : clearInterval(timer), 15000);
@@ -225,7 +233,7 @@ async function tripView(id) {
 
   $('#back').addEventListener('click', () => { leave(); tripsView(); });
   $('#cam').addEventListener('click', () => { if (stopCamera) { stopCamera(); stopCamera = null; $('#v').hidden = true; } else camera(check); });
-  $('#manual').addEventListener('click', () => { const ref = window.prompt?.('Booking reference (MT…)'); if (ref) check(ref.trim().toUpperCase()); });
+  $('#manual').addEventListener('click', () => { const ref = window.prompt?.('Booking reference (MT…) or parcel code (e.g. BAZ4521-K7Q2)'); if (ref) check(ref.trim().toUpperCase()); });
   $$('[data-st]').forEach(b => b.addEventListener('click', () => setStatus(b, id)));
   $('#gps').addEventListener('change', e => e.target.checked ? startGps(id) : stopGps());
   $('#sos').addEventListener('click', () => sos(id, m));
@@ -235,6 +243,16 @@ async function tripView(id) {
   const show = (cls, text) => { const r = $('#res'); r.hidden = false; r.className = 'result ' + cls; r.textContent = text; navigator.vibrate?.(cls === 'ok' ? 80 : [60, 60, 60]); };
   const lugLine = seats => seats.map(s => s.luggage?.has ? `Seat ${s.seat_no} luggage: ${s.luggage.text}.` : '').filter(Boolean).join(' ');
   async function check(code) {
+    // Parcel labels (QR "MTP|…" or a typed plate code like BAZ4521-K7Q2) go to the parcel scan; needs a signal.
+    if (code.startsWith('MTP|') || /^[A-Z0-9]+-[A-Z2-9]{4}$/.test(code)) {
+      if (!navigator.onLine) return show('warn', 'Parcel scans need a signal. Keep the parcel aside and scan it when online.');
+      try {
+        const r = await api(`/agent/trips/${id}/parcel-scan`, { method: 'POST', body: { code } });
+        show(r.result === 'loaded' || r.result === 'unloaded' ? 'ok' : r.result === 'duplicate' ? 'warn' : 'bad', r.message);
+        await refresh();
+      } catch (e) { if (!guard(e)) show('bad', e.message); }
+      return;
+    }
     const scanned_at = new Date().toISOString();
     const client_id = crypto.randomUUID();
     if (navigator.onLine) {
@@ -258,7 +276,7 @@ async function tripView(id) {
     boardedLocal.add(ref); setNet(); drawSeats();
     show('ok', `Board (offline): seat ${seats.map(s => s.seat_no).join(', ')} · ${seats[0].passenger_name}. Check ${seats[0].id_type}. ${lugLine(seats)}`);
   }
-  drawSeats();
+  drawSeats(); drawParcels();
 }
 
 /** SOS: pick what happened, attach the phone's location, alert the company and the platform. */

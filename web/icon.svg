@@ -1,1 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#146b3a"/><rect x="12" y="16" width="40" height="30" rx="6" fill="#fff"/><rect x="16" y="20" width="32" height="12" rx="2" fill="#b8611c"/><circle cx="21" cy="46" r="5" fill="#1b1d1a"/><circle cx="43" cy="46" r="5" fill="#1b1d1a"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="MyTicket">
+  <!-- Copper tile, white ticket with side notches, dotted route between two stops. -->
+  <rect width="64" height="64" rx="16" fill="#E0802F"/>
+  <path d="M13 20a5 5 0 0 1 5-5h28a5 5 0 0 1 5 5v6.5a5.5 5.5 0 0 0 0 11V44a5 5 0 0 1-5 5H18a5 5 0 0 1-5-5v-6.5a5.5 5.5 0 0 0 0-11z" fill="#fff"/>
+  <path d="M24 38c0-8 16-4 16-12" fill="none" stroke="#146B3A" stroke-width="3.2" stroke-linecap="round" stroke-dasharray="0.1 5.4"/>
+  <circle cx="24" cy="38" r="4" fill="#146B3A"/>
+  <circle cx="40" cy="26" r="4" fill="#fff" stroke="#146B3A" stroke-width="3"/>
+</svg>

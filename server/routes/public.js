@@ -15,6 +15,7 @@ import { rateLimit, decrypt } from '../security.js';
 import { queue } from '../services/notify.js';
 import { joinWaitlist, getOffer } from '../services/waitlist.js';
 import { createShare, stopSharing, sharedView } from '../services/safety.js';
+import { trackParcel } from '../services/parcels.js';
 import { config } from '../config.js';
 
 const list = v => v == null || v === '' ? [] : Array.isArray(v) ? v : String(v).split(',');
@@ -248,6 +249,8 @@ export default function publicRoutes(db) {
     rateLimit(db, `share:t:${b.id}`, 20, 3600);
     res.json(createShare(db, b));
   });
+  /** Public parcel tracking by code (rate-limited: codes are not guessable, but stop scraping). */
+  r.get('/parcels/track/:code', (req, res) => { rateLimit(db, `ptrack:${req.ip}`, 120, 3600); res.json(trackParcel(db, req.params.code)); });
   r.get('/shared/:token', (req, res) => { rateLimit(db, `shared:${req.ip}`, 240, 3600); res.json(sharedView(db, req.params.token)); });
 
   /* ---------- the passenger's own data ---------- */

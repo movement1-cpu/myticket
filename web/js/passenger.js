@@ -24,6 +24,7 @@ export async function home(app) {
       <div class="card"><h3>${t('home.lock.t')}</h3><p class="muted" style="margin:0">${t('home.lock.d')}</p></div>
       <div class="card"><h3>${t('home.sms.t')}</h3><p class="muted" style="margin:0">${t('home.sms.d')}</p></div>
     </section>
+    <form class="card" id="ptrack" action="/parcel.html"><div class="row" style="align-items:end"><label class="field"><span>Track a parcel</span><input name="c" placeholder="Tracking code, e.g. BAZ4521-K7Q2" style="text-transform:uppercase" autocomplete="off"></label><button class="btn ghost">Track</button></div></form>
     ${langs.ussd_code ? html`<div class="notice ok">${t('home.ussd', { code: langs.ussd_code })}</div>` : ''}
     <section class="card"><h3>${t('home.popular')}</h3><div class="chips">${[['Lusaka', 'Kitwe'], ['Lusaka', 'Livingstone'], ['Lusaka', 'Chipata'], ['Kitwe', 'Lusaka'], ['Lusaka', 'Ndola'], ['Kabwe', 'Kitwe']].map(([a, b]) =>
       html`<a class="chip" href="#/search?from=${a}&to=${b}&date=${plusDays(today(), 1)}">${a} → ${b}</a>`)}</div></section>

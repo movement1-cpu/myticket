@@ -1071,3 +1071,86 @@ test('SOS from the bus alerts the company and platform with the location; shown 
   assert.equal((await api('POST', `/api/operator/incidents/${open[0].id}/resolve`, { token: tokens.operator, body: { resolution: 'Spare fitted, bus moving' } })).status, 200);
   assert.equal((await api('POST', `/api/agent/trips/${trip.id}/sos`, { token: tokens.conductor, body: { kind: 'party' } })).status, 400);
 });
+
+/* ---------------- Parcel tracking ---------------- */
+test('parcels: plate-based code, SMS to both, wrong bus refused, follows the bus, secret collection code, public tracking without names', async () => {
+  const d = addDays(localDate(), 7);
+  const t = await firstTrip('Lusaka', 'Kitwe', d);
+  const plate = 'BAZ4521';
+  const reg = await api('POST', '/api/operator/parcels', { token: tokens.clerk, body: { trip_id: t.trip_id, from_city: 'Lusaka', to_city: 'Kitwe', sender_name: 'Joyce Mbewe', sender_phone: '0977111222',
+    receiver_name: 'Paul Mbewe', receiver_phone: '0966333444', description: 'Box of books', weight_kg: 12, fee: 80, pieces: 2 } });
+  assert.equal(reg.status, 201, JSON.stringify(reg.body));
+  const p = reg.body;
+  assert.match(p.ref, new RegExp(`^${plate}-[A-Z2-9]{4}$`), 'tracking code starts with the bus number plate');
+  const sms = db.prepare("SELECT recipient, body FROM notifications WHERE kind = 'parcel' AND body LIKE ? AND channel = 'sms'").all(`%${p.ref}%`);
+  assert.ok(sms.some(n => n.recipient === '260977111222' && /Track it/.test(n.body)), 'sender gets the code and link');
+  const toReceiver = sms.find(n => n.recipient === '260966333444');
+  assert.match(toReceiver.body, new RegExp(`collection code is ${p.dev_collection_code}`), 'only the receiver gets the collection code');
+  assert.ok(!sms.find(n => n.recipient === '260977111222').body.includes(p.dev_collection_code));
+  const wrongRoute = await api('POST', '/api/operator/parcels', { token: tokens.clerk, body: { trip_id: t.trip_id, from_city: 'Lusaka', to_city: 'Livingstone', sender_name: 'A', sender_phone: '0977111222', receiver_name: 'B', receiver_phone: '0966333444', description: 'x', weight_kg: 1, fee: 10 } });
+  assert.equal(wrongRoute.status, 400);
+
+  // Label has a QR; scanning it on a different bus is refused
+  const label = (await api('GET', `/api/operator/parcels/${p.ref}/label`, { token: tokens.clerk })).body;
+  assert.match(label.qr_svg, /<svg/);
+  const { parcelQr } = await import('../server/services/parcels.js');
+  const other = (await api('GET', `/api/operator/trips?date=${d}`, { token: tokens.operator })).body.find(x => x.id !== t.trip_id);
+  const wrong = (await api('POST', `/api/agent/trips/${other.id}/parcel-scan`, { token: tokens.conductor, body: { code: parcelQr(p.ref) } })).body;
+  assert.equal(wrong.result, 'wrong_bus');
+  assert.match(wrong.message, /belongs on bus BAZ 4521/);
+  assert.equal((await api('POST', `/api/agent/trips/${t.trip_id}/parcel-scan`, { token: tokens.conductor, body: { code: 'MTP|' + p.ref + '|forgedforged' } })).body.result, 'invalid');
+  const load = (await api('POST', `/api/agent/trips/${t.trip_id}/parcel-scan`, { token: tokens.conductor, body: { code: parcelQr(p.ref) } })).body;
+  assert.equal(load.result, 'loaded');
+
+  // Bus departs → in transit; public tracking shows the live bus and no personal details
+  await api('POST', `/api/agent/trips/${t.trip_id}/status`, { token: tokens.operator, body: { status: 'boarding' } });
+  await api('POST', `/api/agent/trips/${t.trip_id}/status`, { token: tokens.operator, body: { status: 'departed' } });
+  const track = (await api('GET', `/api/parcels/track/${p.ref.toLowerCase()}`)).body;
+  assert.equal(track.status, 'in_transit');
+  assert.equal(track.plate, 'BAZ 4521');
+  assert.ok(track.live && track.live.position);
+  const pub = JSON.stringify(track);
+  assert.ok(!/Joyce|Paul|0977111222|0966333444|260966/.test(pub), 'no names or phone numbers on the public page');
+  assert.deepEqual(track.events.map(e => e.event).slice(0, 3), ['registered', 'loaded', 'departed']);
+
+  // Arrive + unload scan → receiver told; collect needs the secret code
+  await api('POST', `/api/agent/trips/${t.trip_id}/status`, { token: tokens.operator, body: { status: 'arrived' } });
+  const un = (await api('POST', `/api/agent/trips/${t.trip_id}/parcel-scan`, { token: tokens.conductor, body: { code: p.ref } })).body;
+  assert.equal(un.result, 'unloaded');
+  const ownerTok = tokens.operator;
+  const wrongCode = await api('POST', `/api/operator/parcels/${p.id}/collect`, { token: ownerTok, body: { code: '000000', name: 'Paul Mbewe', id_number: '111111/11/1' } });
+  assert.equal(wrongCode.status, 403);
+  const ok = await api('POST', `/api/operator/parcels/${p.id}/collect`, { token: ownerTok, body: { code: p.dev_collection_code, name: 'Paul Mbewe', id_number: '222222/22/1' } });
+  assert.equal(ok.status, 200);
+  assert.equal((await api('GET', `/api/parcels/track/${p.ref}`)).body.status, 'collected');
+  assert.throws(() => db.prepare('DELETE FROM parcel_events WHERE parcel_id = ?').run(p.id), /append-only/);
+});
+
+test('parcels: left behind → owner alert and move to the next bus; not unloaded → missing alert', async () => {
+  const d = addDays(localDate(), 8);
+  const t = await firstTrip('Lusaka', 'Kitwe', d);
+  const mk = async () => (await api('POST', '/api/operator/parcels', { token: tokens.operator, body: { trip_id: t.trip_id, from_city: 'Lusaka', to_city: 'Kitwe', sender_name: 'S', sender_phone: '0977111222', receiver_name: 'R', receiver_phone: '0966333444', description: 'Bag', weight_kg: 5, fee: 0 } })).body;
+  const forgotten = await mk(), loaded = await mk();
+  const { parcelQr, parcelWatch } = await import('../server/services/parcels.js');
+  await api('POST', `/api/agent/trips/${t.trip_id}/parcel-scan`, { token: tokens.conductor, body: { code: parcelQr(loaded.ref) } });
+  await api('POST', `/api/agent/trips/${t.trip_id}/status`, { token: tokens.operator, body: { status: 'boarding' } });
+  await api('POST', `/api/agent/trips/${t.trip_id}/status`, { token: tokens.operator, body: { status: 'departed' } });
+  assert.ok(db.prepare("SELECT 1 FROM notifications WHERE kind = 'parcel_alert' AND body LIKE ?").get(`%${forgotten.ref} was NOT loaded%`));
+  const next = (await api('GET', `/api/operator/trips?date=${d}`, { token: tokens.operator })).body.find(x => x.id !== t.trip_id && x.route_name === 'Lusaka – Kitwe');
+  const mv = await api('POST', `/api/operator/parcels/${forgotten.id}/move`, { token: tokens.operator, body: { trip_id: next.id } });
+  assert.equal(mv.status, 200, JSON.stringify(mv.body));
+  assert.equal((await api('GET', `/api/parcels/track/${forgotten.ref}`)).body.plate, next.plate, 'same code, new bus');
+  // The loaded one arrives but is never scanned off
+  await api('POST', `/api/agent/trips/${t.trip_id}/status`, { token: tokens.operator, body: { status: 'arrived' } });
+  db.prepare("UPDATE trips SET depart_at = datetime('now', '-1 day') WHERE id = ?").run(t.trip_id);
+  parcelWatch(db);
+  assert.equal(db.prepare('SELECT status FROM parcels WHERE id = ?').get(loaded.id).status, 'missing');
+  assert.ok(db.prepare("SELECT 1 FROM notifications WHERE kind = 'parcel_alert' AND body LIKE ?").get(`%${loaded.ref} on bus%not scanned off%`));
+});
+
+test('live map lists the company buses on the road with position and next stop', async () => {
+  const live = (await api('GET', '/api/operator/live', { token: tokens.operator })).body;
+  assert.ok(Array.isArray(live));
+  if (live.length) { assert.ok(live[0].position.lat && live[0].plate); }
+  assert.equal((await api('GET', '/api/operator/live', { token: tokens.passenger })).status, 403);
+});

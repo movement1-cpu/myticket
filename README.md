@@ -66,7 +66,16 @@ npm test
 - **Station terminal**: clerks sell walk-in tickets on the same live seat inventory as online sales, for cash or a pay-later reservation. A seat sold at the counter shows as booked straight away on the website and on the conductor's phone (the field app refreshes every 15 seconds).
 - **Thermal ticket printing** on 58 mm or 80 mm receipt printers: route, departure, boarding point, bus, each passenger's seat, ID and luggage, totals, QR code and reference. Options (saved per computer): print automatically after each sale, one slip per passenger, and **a luggage tag for every item** ("BAG 1 OF 3"). Reprint any ticket by reference. Set the printer as the computer's default; start Chrome with `--kiosk-printing` to skip the print dialog.
 - **Luggage per passenger**: Yes/No, then how many bags, sacks, containers, boxes, crates and other items (with a description for "other"). Recorded at the counter and online. It appears on the ticket, the manifest (with totals for the luggage hold), the CSV and the field app.
-- Parcel register with status updates and SMS to the receiver.
+- **Parcel tracking**:
+  - The tracking code is built from the bus number plate, e.g. `BAZ4521-K7Q2`.
+  - **QR stickers** print on label printers (100×50 mm, 60×40 mm, 4×6 in, or 58 mm roll), one sticker per piece.
+  - The conductor scans each parcel on and off. Scanning onto the wrong bus is refused.
+  - Status follows the bus: on the way when it departs, arrived when unloaded. The receiver gets an SMS.
+  - A secret **collection code** goes only to the receiver, and handover also records the collector's name and ID.
+  - An append-only history records who scanned what, where and when.
+  - Alerts fire for a parcel left behind when its bus departs, not unloaded 2 hours after arrival (marked **missing**), or uncollected after 7 days. A parcel can move to another bus and keep its code.
+  - The public page `/parcel.html?c=CODE` shows the status, history and the bus live on a map, with no names or phone numbers.
+- **Live map** of all the company's buses on the road, with next stop, ETA, and passenger and parcel counts.
 - Revenue dashboard, occupancy by route, reviews, a balance (earned, pending, available) and payout requests to the company's bank account.
 
 **Conductors and agents** (`/agent.html`, installable)

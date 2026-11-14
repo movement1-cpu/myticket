@@ -7,6 +7,7 @@ import { openDb, tx } from './db.js';
 import { config } from './config.js';
 import { hashPassword } from './auth.js';
 import { encrypt, protectStoredIds } from './security.js';
+import { registerParcel } from './services/parcels.js';
 import { ensureTrips } from './services/trips.js';
 import { priceLeg } from './services/pricing.js';
 import { localDate, addDays, ref, uniqueRef, isoWeekday } from './util.js';
@@ -214,8 +215,6 @@ export function seedDemo(db) {
     db.prepare("INSERT INTO disputes (booking_id, user_id, category, description) VALUES (?,?,?,?)").run(done, nat, 'service', 'The bus left Lusaka 90 minutes late and nobody told us why. I would like a partial refund.');
     db.prepare("INSERT INTO disputes (user_id, category, description) VALUES (?,?,?)").run(pax[3].id, 'payment_failed', 'Airtel deducted K255 but I got no ticket. Transaction ID MP2411.1830.C51723.');
 
-    db.prepare("INSERT INTO parcels (ref, operator_id, from_city, to_city, sender_name, sender_phone, receiver_name, receiver_phone, description, weight_kg, fee, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
-      .run('PCDEMO1', ops[Z], 'Lusaka', 'Kitwe', 'Joyce Mbewe', '260977111222', 'Paul Mbewe', '260966333444', 'Box of school books', 12, 80, 'received');
     db.prepare("INSERT INTO settlements (operator_id, amount, bank_snapshot, created_at) VALUES (?, 15000, 'Stanbic 9100001234567 Kitwe', datetime('now','-1 day'))").run(ops[C]);
 
     // Luggage prices: Zambezi charges for bulky items (first bag free); Copperbelt Express carries luggage free.
@@ -248,6 +247,13 @@ export function seedDemo(db) {
     db.prepare("UPDATE users SET admin_scope = 'support' WHERE phone = '260950000003'").run();
   });
   protectStoredIds(db); // encrypt the demo ID numbers like real ones
+  // Demo parcels on tomorrow's 06:00 Lusaka → Kitwe bus (BAZ 4521), registered the normal way.
+  const clerk = db.prepare("SELECT id, operator_id FROM users WHERE phone = '260960000003'").get();
+  const bus = db.prepare(`SELECT t.id FROM trips t JOIN buses b ON b.id = t.bus_id WHERE b.plate = 'BAZ 4521' AND t.service_date = ? AND t.route_id IN (SELECT id FROM routes WHERE name LIKE 'Lusaka%Kitwe')`).get(addDays(localDate(), 1));
+  if (bus) {
+    registerParcel(db, clerk, { trip_id: bus.id, from_city: 'Lusaka', to_city: 'Kitwe', sender_name: 'Joyce Mbewe', sender_phone: '0977111222', receiver_name: 'Paul Mbewe', receiver_phone: '0966333444', description: 'Box of school books', weight_kg: 12, fee: 80, pieces: 1 });
+    registerParcel(db, clerk, { trip_id: bus.id, from_city: 'Lusaka', to_city: 'Ndola', sender_name: 'Grace Tembo', sender_phone: '0955222333', receiver_name: 'Ruth Tembo', receiver_phone: '0977444555', description: 'Mealie meal, 2 x 25 kg', weight_kg: 50, fee: 120, pieces: 2 });
+  }
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

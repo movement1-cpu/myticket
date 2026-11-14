@@ -1,0 +1,35 @@
+/* Parcel stickers for label printers (Xprinter, Zebra, TSC… via their Windows/macOS driver) and 58 mm rolls.
+   One sticker per piece. Pure black on white; no greys (thermal heads print them badly). */
+:root { --w: 100mm; --h: 50mm; color-scheme: light; }
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #fff; color: #000; }
+body { font: 700 3mm/1.15 Arial, Helvetica, sans-serif; }
+.label { width: var(--w); height: var(--h); padding: 2mm; overflow: hidden; break-after: page; page-break-after: always;
+  display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto 1fr auto; gap: 1mm 2.5mm; }
+.label:last-child { break-after: auto; page-break-after: auto; }
+.top { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: baseline; border-bottom: .5mm solid #000; padding-bottom: .8mm; font-size: 2.6mm; }
+.qr { width: calc(var(--h) - 13mm); height: calc(var(--h) - 13mm); align-self: center; }
+.qr svg { width: 100%; height: 100%; display: block; }
+.main { display: grid; align-content: center; gap: .8mm; min-width: 0; }
+.code { font: 900 5.2mm/1 "Courier New", monospace; letter-spacing: .1mm; word-break: break-all; }
+.to { font-size: 6.5mm; font-weight: 900; text-transform: uppercase; line-height: 1; }
+.small { font-size: 2.6mm; font-weight: 400; }
+.bottom { grid-column: 1 / -1; display: flex; justify-content: space-between; border-top: .5mm solid #000; padding-top: .8mm; font-size: 3mm; }
+.piece { font-size: 4mm; font-weight: 900; }
+
+/* 60 × 40 mm: smaller type */
+body.s60 .code { font-size: 3.2mm; word-break: normal; overflow-wrap: normal; white-space: nowrap; } body.s60 .to { font-size: 4.6mm; } body.s60 .top, body.s60 .small { font-size: 2.1mm; } body.s60 .bottom { font-size: 2.4mm; } body.s60 .piece { font-size: 3mm; }
+body.s60 .qr { width: calc(var(--h) - 12mm); height: calc(var(--h) - 12mm); }
+/* 4 × 6 inch shipping label: stacked, big */
+body.s4x6 .label { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr auto; justify-items: center; text-align: center; padding: 4mm; }
+body.s4x6 .qr { width: 60mm; height: 60mm; } body.s4x6 .code { font-size: 9mm; } body.s4x6 .to { font-size: 14mm; } body.s4x6 .small { font-size: 4mm; }
+body.s4x6 .top, body.s4x6 .bottom { font-size: 4.5mm; width: 100%; } body.s4x6 .piece { font-size: 8mm; }
+/* 58 mm continuous receipt roll */
+body.s58 .label { grid-template-columns: 1fr; justify-items: center; text-align: center; height: auto; }
+body.s58 .qr { width: 32mm; height: 32mm; }
+
+.screen-only { font-family: system-ui, sans-serif; }
+.toolbar { width: var(--w); margin: 8px auto; display: flex; gap: 8px; }
+.toolbar button { flex: 1; padding: 8px; font: 600 14px system-ui; }
+@media screen { body { background: #e9e9e9; padding: 12px; } #labels { display: grid; gap: 6px; justify-content: center; } .label { background: #fff; box-shadow: 0 1px 6px rgba(0,0,0,.25); } }
+@media print { .screen-only { display: none !important; } }

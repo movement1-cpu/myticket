@@ -11,6 +11,7 @@ import { layoutForTrip } from '../services/seats.js';
 import { luggageOf } from '../services/luggage.js';
 import { t as tr } from '../i18n.js';
 import { raiseSos } from '../services/safety.js';
+import { scanParcel, parcelsFollowTrip } from '../services/parcels.js';
 
 /**
  * Conductor / station agent field app.
@@ -57,6 +58,7 @@ export default function agentRoutes(db) {
     res.json({
       trip: { id: t.id, status: t.status, depart_local: localTime(t.depart_at), emergency_phone: db.prepare('SELECT emergency_phone FROM operators WHERE id = ?').get(t.operator_id)?.emergency_phone, service_date: t.service_date, stops: routeStops(db, t.route_id).map(s => ({ city: s.city, terminal: s.terminal })) },
       codes: Object.fromEntries(refs.map(ref => [ref, qrPayload(ref)])),
+      parcels: db.prepare("SELECT ref, from_city, to_city, pieces, description, status FROM parcels WHERE trip_id = ? AND status NOT IN ('cancelled') ORDER BY to_city, ref").all(t.id),
       seats, held, layout: { name: layout.name, decks: layout.spec.decks }, downloaded_at: new Date().toISOString(),
     });
   });
@@ -121,6 +123,7 @@ export default function agentRoutes(db) {
       if (status === 'cancelled') { cancelBooking(db, b, { by: req.user, reason: 'Trip cancelled by operator', full: true }); refunded++; }
       else if (b.status === 'confirmed') notifyContact(db, { phone: b.contact_phone, kind: `trip_${status}`, body: msg(b.lang) });
     }
+    parcelsFollowTrip(db, t.id, status);
     db.prepare('INSERT INTO audit_log (user_id, action, entity, entity_id, detail) VALUES (?,?,?,?,?)').run(req.user.id, `trip_${status}`, 'trip', String(t.id), delay ? `${delay} min` : null);
     res.json({ ok: true, status, notified: bookings.length, refunded });
   });
@@ -131,6 +134,9 @@ export default function agentRoutes(db) {
     rateLimit(db, `sos:${req.user.id}`, 10, 600, 'SOS already sent several times. The company and platform have been alerted.');
     res.status(201).json(raiseSos(db, { trip: t, user: req.user, ...req.body }));
   });
+
+  /** Parcel label scanned on this bus: load before departure, unload on arrival. Needs a signal. */
+  r.post('/agent/trips/:id/parcel-scan', ...field, (req, res) => res.json(scanParcel(db, req.user, myTrip(req).id, req.body.code)));
 
   /** GPS ping from the conductor's phone while the trip is running. */
   r.post('/agent/trips/:id/position', ...field, (req, res) => {

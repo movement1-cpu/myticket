@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Track a parcel — MyTicket</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="referrer" content="no-referrer">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@700;800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;700&display=swap">
+  <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+  <header class="topbar"><div class="in"><a class="logo" href="/"><img src="/icon.svg" alt="" width="30" height="30"><span>My<b>Ticket</b></span></a><nav><a href="/">Book a bus</a></nav></div></header>
+  <main class="wrap" style="max-width:860px">
+    <div class="page">
+      <h1>Track a parcel</h1>
+      <form class="card" id="f"><div class="row"><label class="field"><span>Tracking code (on your receipt or SMS)</span><input name="c" placeholder="BAZ4521-K7Q2" style="text-transform:uppercase" required autocomplete="off"></label><button class="btn">Track</button></div></form>
+      <div id="out"></div>
+    </div>
+  </main>
+  <script src="/vendor/leaflet/leaflet.js"></script>
+  <script type="module" src="/js/parcel.js"></script>
+</body>
+</html>

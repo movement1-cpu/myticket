@@ -249,10 +249,29 @@ CREATE TABLE IF NOT EXISTS parcels (
   sender_name TEXT NOT NULL, sender_phone TEXT NOT NULL,
   receiver_name TEXT NOT NULL, receiver_phone TEXT NOT NULL,
   description TEXT NOT NULL, weight_kg REAL NOT NULL, fee REAL NOT NULL,
-  status TEXT NOT NULL DEFAULT 'received' CHECK (status IN ('received','loaded','in_transit','arrived','collected','cancelled')),
+  -- received → loaded (scanned onto its bus) → in_transit (bus departed) → arrived (bus arrived / unloaded) → collected
+  -- missing: not unloaded after its bus arrived, or left behind; an owner must sort it out
+  status TEXT NOT NULL DEFAULT 'received' CHECK (status IN ('received','loaded','in_transit','arrived','collected','cancelled','missing')),
   created_by INTEGER REFERENCES users(id),
-  created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT
+  created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT,
+  pieces INTEGER NOT NULL DEFAULT 1,
+  collection_hash TEXT,          -- hash of the secret code only the receiver gets by SMS
+  collected_by_name TEXT, collected_id TEXT, collected_at TEXT,
+  last_alert TEXT                -- de-duplicates loss alerts
 );
+
+-- Chain of custody: every scan and status change, append-only.
+CREATE TABLE IF NOT EXISTS parcel_events (
+  id INTEGER PRIMARY KEY,
+  parcel_id INTEGER NOT NULL REFERENCES parcels(id),
+  event TEXT NOT NULL,           -- registered, loaded, departed, arrived, unloaded, collected, reassigned, alert, cancelled, found
+  trip_id INTEGER REFERENCES trips(id), plate TEXT, city TEXT,
+  user_id INTEGER REFERENCES users(id), note TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS ix_parcel_events ON parcel_events(parcel_id);
+CREATE TRIGGER IF NOT EXISTS parcel_events_no_update BEFORE UPDATE ON parcel_events BEGIN SELECT RAISE(ABORT, 'parcel history is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS parcel_events_no_delete BEFORE DELETE ON parcel_events BEGIN SELECT RAISE(ABORT, 'parcel history is append-only'); END;
 
 CREATE TABLE IF NOT EXISTS checkins (
   id INTEGER PRIMARY KEY,
@@ -487,6 +506,7 @@ function rebuild(db, table, marker) {
 function migrate(db) {
   rebuild(db, 'refunds', "'awaiting_approval'");
   rebuild(db, 'settlements', "'approved'");
+  rebuild(db, 'parcels', "'missing'");
   const has = (table, col) => db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === col);
   const add = (table, col, def) => { if (!has(table, col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`); };
   for (const c of ['lug_bags', 'lug_sacks', 'lug_containers', 'lug_boxes', 'lug_crates', 'lug_other']) add('booking_seats', c, 'INTEGER NOT NULL DEFAULT 0');

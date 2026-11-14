@@ -12,6 +12,8 @@ import { openShift, requireShift, recordCash, shiftSummary, startShift, endShift
 import { verifyPassword, hashPassword as hashPin } from '../auth.js';
 import { operatorTerms, DEFAULT_LUGGAGE_FEES } from '../services/pricing.js';
 import { dueItems, tripBlockers } from '../services/maintenance.js';
+import { registerParcel, collectParcel, reassignParcel, parcelLabel, logEvent } from '../services/parcels.js';
+import { tripPosition } from '../services/trips.js';
 import { notifyContact, queue } from '../services/notify.js';
 import { ticketData, qrSvg } from '../services/tickets.js';
 import { luggageOf, LUGGAGE_KINDS } from '../services/luggage.js';
@@ -482,29 +484,59 @@ export default function operatorRoutes(db) {
 
   /* ---------- parcels ---------- */
   r.get('/operator/parcels', ...desk, (req, res) => {
-    res.json(db.prepare(`SELECT p.*, t.service_date, t.depart_at, b.plate FROM parcels p LEFT JOIN trips t ON t.id = p.trip_id LEFT JOIN buses b ON b.id = t.bus_id
-      WHERE p.operator_id = ? ORDER BY p.id DESC LIMIT 200`).all(req.operatorId));
+    const st = stationOf(req);
+    res.json(db.prepare(`SELECT p.id, p.ref, p.trip_id, p.from_city, p.to_city, p.sender_name, p.sender_phone, p.receiver_name, p.receiver_phone, p.description, p.weight_kg, p.fee, p.status,
+        p.pieces, p.created_at, p.updated_at, p.collected_by_name, p.collected_at, t.service_date, t.depart_at, t.status trip_status, b.plate
+      FROM parcels p LEFT JOIN trips t ON t.id = p.trip_id LEFT JOIN buses b ON b.id = t.bus_id
+      WHERE p.operator_id = ? AND (? IS NULL OR p.from_city = ? OR p.to_city = ?) ORDER BY p.status = 'missing' DESC, p.id DESC LIMIT 300`).all(req.operatorId, st, st, st));
   });
   r.post('/operator/parcels', ...desk, (req, res) => {
     const b = req.body;
-    required(b, ['from_city', 'to_city', 'sender_name', 'sender_phone', 'receiver_name', 'receiver_phone', 'description', 'weight_kg', 'fee']);
-    if (b.trip_id) mine('trips', b.trip_id, req.operatorId);
+    required(b, ['trip_id', 'from_city', 'to_city', 'sender_name', 'sender_phone', 'receiver_name', 'receiver_phone', 'description', 'weight_kg', 'fee']);
     if (stationOf(req) && b.from_city !== stationOf(req)) throw forbidden(`You can only register parcels sent from ${stationOf(req)}.`);
     const shift = Number(b.fee) > 0 ? requireShift(db, req.user) : null;
-    const p = db.prepare(`INSERT INTO parcels (ref, operator_id, trip_id, from_city, to_city, sender_name, sender_phone, receiver_name, receiver_phone, description, weight_kg, fee, created_by)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *`).get(uniqueRef(db, 'parcels', 'ref', 'PC', 6), req.operatorId, b.trip_id || null, b.from_city, b.to_city, b.sender_name.trim(), normPhone(b.sender_phone),
-      b.receiver_name.trim(), normPhone(b.receiver_phone), b.description.trim(), Number(b.weight_kg), Number(b.fee), req.user.id);
+    const p = registerParcel(db, req.user, b);
     if (shift) recordCash(db, shift.id, { kind: 'parcel', amount: p.fee, ref: p.ref });
-    notifyContact(db, { phone: p.receiver_phone, kind: 'parcel', body: `MyTicket: Parcel ${p.ref} from ${p.sender_name} is on its way to ${p.to_city} with ${req.user.operator_name}. Collect with your ID and this reference.` });
     res.status(201).json(p);
   });
-  r.put('/operator/parcels/:id', ...desk, (req, res) => {
+  r.get('/operator/parcels/:id/history', ...desk, (req, res) => {
     const p = mine('parcels', req.params.id, req.operatorId);
-    const st = req.body.status;
-    if (!['received', 'loaded', 'in_transit', 'arrived', 'collected', 'cancelled'].includes(st)) throw bad('Unknown parcel status.');
-    db.prepare("UPDATE parcels SET status = ?, trip_id = COALESCE(?, trip_id), updated_at = datetime('now') WHERE id = ?").run(st, req.body.trip_id || null, p.id);
-    if (st === 'arrived') notifyContact(db, { phone: p.receiver_phone, kind: 'parcel', body: `MyTicket: Parcel ${p.ref} has arrived in ${p.to_city}. Collect it at the ${req.user.operator_name} office with your ID.` });
+    res.json(db.prepare('SELECT e.*, u.name by_name FROM parcel_events e LEFT JOIN users u ON u.id = e.user_id WHERE e.parcel_id = ? ORDER BY e.id').all(p.id));
+  });
+  /** Sticker / label data with the QR code (one label per piece is printed by the browser). */
+  r.get('/operator/parcels/:ref/label', ...desk, async (req, res) => {
+    const p = db.prepare('SELECT * FROM parcels WHERE ref = ? AND operator_id = ?').get(String(req.params.ref).toUpperCase(), req.operatorId);
+    if (!p) throw notFound();
+    res.json({ ...(await parcelLabel(db, p)), operator_name: req.user.operator_name, printed_by: req.user.name });
+  });
+  r.post('/operator/parcels/:id/collect', ...desk, (req, res) => {
+    const p = mine('parcels', req.params.id, req.operatorId);
+    if (stationOf(req) && p.to_city !== stationOf(req)) throw forbidden(`This parcel is collected in ${p.to_city}.`);
+    res.json(collectParcel(db, req.user, p, req.body));
+  });
+  r.post('/operator/parcels/:id/move', ...desk, (req, res) => res.json(reassignParcel(db, req.user, mine('parcels', req.params.id, req.operatorId), Number(req.body.trip_id))));
+  /** Owner cancels a parcel that never left (refund the fee in person). */
+  r.post('/operator/parcels/cancel/:id', ...ownerOps, (req, res) => {
+    const p = mine('parcels', req.params.id, req.operatorId);
+    if (!['received', 'missing'].includes(p.status)) throw conflict('Only parcels still at a station can be cancelled.');
+    db.prepare("UPDATE parcels SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?").run(p.id);
+    logEvent(db, p, 'cancelled', { user: req.user, note: String(req.body.reason || '').slice(0, 200) || null });
     res.json({ ok: true });
+  });
+
+  /* ---------- live map of the company's buses ---------- */
+  r.get('/operator/live', ...desk, (req, res) => {
+    ensureTrips(db, localDate());
+    const trips = db.prepare(`SELECT t.id FROM trips t WHERE t.operator_id = ? AND t.status IN ('boarding','departed','delayed')
+      AND t.service_date >= date(?, '-1 day')`).all(req.operatorId, localDate());
+    res.json(trips.map(t => {
+      const pos = tripPosition(db, t.id);
+      const next = pos.stops.find(s => !s.passed);
+      const r = db.prepare(`SELECT r.name route, (SELECT COUNT(*) FROM booking_seats bs WHERE bs.trip_id = ? AND bs.active = 1) pax,
+        (SELECT COUNT(*) FROM parcels p WHERE p.trip_id = ? AND p.status IN ('loaded','in_transit')) parcels FROM trips t JOIN routes r ON r.id = t.route_id WHERE t.id = ?`).get(t.id, t.id, t.id);
+      return { trip_id: t.id, plate: pos.plate, status: pos.status, delay_min: pos.delay_min, source: pos.source, updated_at: pos.updated_at, position: pos.position, route: r.route,
+        passengers: r.pax, parcels: r.parcels, next_stop: next ? { city: next.city, eta: next.eta || next.planned } : null, stops: pos.stops.map(s => [s.lat, s.lng]) };
+    }));
   });
 
   /* ---------- reviews ---------- */

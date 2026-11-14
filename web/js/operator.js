@@ -7,6 +7,7 @@ const SECTIONS = [
   ['trips', 'Trips & manifests', ['operator', 'clerk', 'conductor']],
   ['counter', 'Station terminal', ['operator', 'clerk', 'conductor']],
   ['parcels', 'Parcels', ['operator', 'clerk']],
+  ['live', 'Live map', ['operator', 'clerk', 'conductor']],
   ['fleet', 'Fleet', ['operator']],
   ['staff', 'Drivers & staff', ['operator']],
   ['maintenance', 'Maintenance', ['operator']],
@@ -553,29 +554,141 @@ async function pricing(main) {
 }
 
 /* ---------- parcels ---------- */
+const LABEL_KEY = 'mt.labelprinter';
+const labelPrinter = {
+  get() { try { return { size: '100x50', auto: true, ...JSON.parse(localStorage.getItem(LABEL_KEY)) }; } catch { return { size: '100x50', auto: true }; } },
+  set(v) { try { localStorage.setItem(LABEL_KEY, JSON.stringify(v)); } catch {} },
+};
+/** Print one sticker per piece on the label printer, through a hidden frame (no pop-up). */
+function printLabels(ref) {
+  const f = document.createElement('iframe');
+  f.title = 'Label print';
+  f.style.cssText = 'position:fixed;left:-10000px;top:0;width:110mm;height:160mm;border:0';
+  f.src = `/label.html?${new URLSearchParams({ ref, size: labelPrinter.get().size, auto: '1' })}`;
+  document.body.append(f);
+  setTimeout(() => f.remove(), 120000);
+}
+const PCLASS = { received: 'warn', loaded: 'info', in_transit: 'info', arrived: 'ok', collected: 'idle', cancelled: 'idle', missing: 'bad' };
+const parcelPill = st => html`<span class="pill ${PCLASS[st] || 'idle'}">${PLABEL[st] || st}</span>`;
+const PLABEL = { received: 'at office', loaded: 'loaded', in_transit: 'on the way', arrived: 'ready to collect', collected: 'collected', cancelled: 'cancelled', missing: 'MISSING' };
+
 async function parcels(main) {
-  const [list, cities, tripsToday] = await Promise.all([api('/operator/parcels'), api('/cities'), api('/operator/trips?date=' + today())]);
-  const next = { received: 'loaded', loaded: 'in_transit', in_transit: 'arrived', arrived: 'collected' };
-  main.innerHTML = html`<div class="head"><h1>Parcels</h1><button class="btn" id="add">Register parcel</button></div>
-    <div class="tablewrap"><table><thead><tr><th>Ref</th><th>Route</th><th>Sender → Receiver</th><th>Item</th><th class="r">Fee</th><th>Bus</th><th>Status</th><th></th></tr></thead><tbody>
-      ${list.map(p => html`<tr><td class="mono">${p.ref}</td><td>${p.from_city} → ${p.to_city}</td><td class="small">${p.sender_name} (${phoneFmt(p.sender_phone)})<br>${p.receiver_name} (${phoneFmt(p.receiver_phone)})</td>
-        <td class="small">${p.description}<br>${p.weight_kg} kg</td><td class="r num">${kwacha(p.fee)}</td><td class="small mono">${p.plate ? `${p.plate} ${time(p.depart_at)}` : '—'}</td><td>${pill(p.status)}</td>
-        <td>${next[p.status] ? html`<button class="btn ghost sm" data-adv="${p.id}" data-to="${next[p.status]}">Mark ${next[p.status].replace('_', ' ')}</button>` : ''}</td></tr>`)}
+  const [list, cities] = await Promise.all([api('/operator/parcels'), api('/cities')]);
+  const lp = labelPrinter.get();
+  const station = auth.user.station_city;
+  const missing = list.filter(p => p.status === 'missing' || (p.status === 'received' && ['departed', 'arrived'].includes(p.trip_status)));
+  main.innerHTML = html`<div class="head"><h1>Parcels</h1><div class="row"><a class="btn ghost" href="/parcel.html" target="_blank" rel="noopener">Public tracking page</a><button class="btn" id="add">Register parcel</button></div></div>
+    ${missing.length ? html`<div class="notice bad"><b>${missing.length} parcel${missing.length > 1 ? 's need' : ' needs'} attention:</b> ${missing.map(p => p.ref).join(', ')}. Find ${missing.length > 1 ? 'them' : 'it'}, then scan or move to another bus.</div>` : ''}
+    <details class="card"><summary><b>Label printer</b> <span class="small muted">· ${lp.size === '4x6' ? '4 × 6 in' : lp.size === '58' ? '58 mm roll' : lp.size.replace('x', ' × ') + ' mm'} stickers${lp.auto ? ' · prints when you register' : ''}</span></summary>
+      <div class="row"><label class="field" style="max-width:240px"><span>Sticker size</span><select id="lsize">${[['100x50', '100 × 50 mm sticker'], ['60x40', '60 × 40 mm sticker'], ['4x6', '4 × 6 inch shipping label'], ['58', '58 mm receipt roll']].map(([v, l]) => html`<option value="${v}" ${lp.size === v ? 'selected' : ''}>${l}</option>`)}</select></label>
+        <label class="chip"><input type="checkbox" id="lauto" ${lp.auto ? 'checked' : ''}>Print labels as soon as a parcel is registered</label></div>
+      <p class="small muted" style="margin:0">Works with sticker printers such as Xprinter, Zebra or TSC through their normal printer driver. Set it as this computer's default printer and set the same label size in its driver. One sticker prints for each piece. Stick one on every piece.</p></details>
+    <div class="tablewrap"><table><thead><tr><th>Tracking code</th><th>Route</th><th>Bus</th><th>Sender → Receiver</th><th>Item</th><th>Status</th><th></th></tr></thead><tbody>
+      ${list.map(p => html`<tr><td class="mono"><b>${p.ref}</b><br><span class="small muted">${p.created_at.slice(0, 16)}</span></td><td>${p.from_city} → ${p.to_city}</td>
+        <td class="small"><span class="mono">${p.plate || '—'}</span>${p.depart_at ? html`<br>${dayOf(p.service_date)} ${time(p.depart_at)}` : ''}</td>
+        <td class="small">${p.sender_name}<br>→ ${p.receiver_name} (${phoneFmt(p.receiver_phone)})</td><td class="small">${p.description}<br>${p.pieces} pc · ${p.weight_kg} kg · ${kwacha(p.fee)}</td>
+        <td>${parcelPill(p.status)}${p.collected_by_name ? html`<br><span class="small muted">by ${p.collected_by_name}</span>` : ''}</td>
+        <td><div class="row" style="gap:4px">${p.status !== 'cancelled' ? html`<button class="btn ghost sm" data-label="${p.ref}">Labels</button>` : ''}<button class="btn ghost sm" data-hist="${p.id}">History</button>
+          ${p.status === 'arrived' && (!station || station === p.to_city) ? html`<button class="btn sm" data-collect="${p.id}">Collect</button>` : ''}
+          ${['received', 'missing'].includes(p.status) ? html`<button class="btn ghost sm" data-move="${p.id}">Move to another bus</button>` : ''}</div></td></tr>`)}
     </tbody></table></div>`;
+  const saveLp = () => labelPrinter.set({ size: $('#lsize', main).value, auto: $('#lauto', main).checked });
+  $('#lsize', main).addEventListener('change', saveLp); $('#lauto', main).addEventListener('change', saveLp);
+  const reload = () => parcels(main);
+
   $('#add', main).addEventListener('click', () => {
-    const opt = cities.map(c => html`<option>${c}</option>`).join('');
-    const m = modal(html`<h2>Register a parcel</h2><form id="pf" class="grid2">
-      <label class="field"><span>From</span><select name="from_city">${raw(opt)}</select></label><label class="field"><span>To</span><select name="to_city">${raw(opt)}</select></label>
+    const from = station || 'Lusaka';
+    const m = modal(html`<h2>Register a parcel</h2><form id="pf" class="grid2" autocomplete="off">
+      <label class="field"><span>From</span><select name="from_city" ${station ? 'disabled' : ''}>${cities.map(c => html`<option ${c === from ? 'selected' : ''}>${c}</option>`)}</select></label>
+      <label class="field"><span>To</span><select name="to_city">${cities.filter(c => c !== from).map(c => html`<option>${c}</option>`)}</select></label>
+      <label class="field"><span>Travel date</span><input type="date" name="date" value="${today()}" min="${today()}"></label>
+      <label class="field"><span>Bus (the tracking code uses its number plate)</span><select name="trip_id" required></select></label>
       <label class="field"><span>Sender name</span><input name="sender_name" required></label><label class="field"><span>Sender phone</span><input name="sender_phone" inputmode="tel" required></label>
-      <label class="field"><span>Receiver name</span><input name="receiver_name" required></label><label class="field"><span>Receiver phone (gets SMS)</span><input name="receiver_phone" inputmode="tel" required></label>
-      <label class="field"><span>Description</span><input name="description" required></label><label class="field"><span>Weight (kg)</span><input name="weight_kg" type="number" step="0.1" min="0.1" required></label>
-      <label class="field"><span>Fee (K)</span><input name="fee" type="number" min="0" required></label>
-      <label class="field"><span>Load on (optional)</span><select name="trip_id"><option value="">Not yet assigned</option>${tripsToday.map(t => html`<option value="${t.id}">${t.depart_local} · ${t.route_name} · ${t.plate}</option>`)}</select></label>
-      <div class="row" style="justify-content:flex-end;grid-column:1/-1"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn">Register</button></div></form>`, { wide: true });
+      <label class="field"><span>Receiver name</span><input name="receiver_name" required></label><label class="field"><span>Receiver phone (gets the collection code)</span><input name="receiver_phone" inputmode="tel" required></label>
+      <label class="field"><span>Description</span><input name="description" placeholder="e.g. 2 bags of mealie meal" required></label>
+      <div class="grid3"><label class="field"><span>Pieces</span><input name="pieces" type="number" min="1" max="50" value="1" required></label><label class="field"><span>Weight (kg)</span><input name="weight_kg" type="number" step="0.1" min="0.1" required></label><label class="field"><span>Fee (K)</span><input name="fee" type="number" min="0" required></label></div>
+      <div class="row" style="justify-content:flex-end;grid-column:1/-1"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn copper">Register and print labels</button></div></form>`, { wide: true });
     const f = $('#pf', m.el);
-    f.addEventListener('submit', e => { e.preventDefault(); busy(f.querySelector('.btn:not(.ghost)'), async () => { const v = formData(f); const p = await api('/operator/parcels', { method: 'POST', body: { ...v, trip_id: Number(v.trip_id) || null } }); m.close(); toast(`Parcel ${p.ref} registered. Receiver notified by SMS.`); parcels(main); }); });
+    const loadBuses = async () => {
+      const v = formData(f), fromCity = station || f.from_city.value;
+      const trips = (await api('/operator/trips?date=' + v.date)).filter(t => ['scheduled', 'boarding', 'delayed'].includes(t.status));
+      const routes = await api('/operator/routes');
+      const serves = t => { const r = routes.find(x => x.id === t.route_id); if (!r) return false; const a = r.stops.find(s => s.city === fromCity), z = [...r.stops].reverse().find(s => s.city === f.to_city.value); return a && z && z.seq > a.seq; };
+      const ok = trips.filter(serves);
+      f.trip_id.innerHTML = ok.length ? ok.map(t => html`<option value="${t.id}">${t.depart_local} · ${t.plate} · ${t.route_name}</option>`).join('') : '<option value="">No bus on this route that day</option>';
+    };
+    f.addEventListener('change', e => { if (['from_city', 'to_city', 'date'].includes(e.target.name)) loadBuses(); });
+    loadBuses();
+    f.addEventListener('submit', e => { e.preventDefault(); busy(f.querySelector('.copper'), async () => {
+      const v = formData(f);
+      const p = await api('/operator/parcels', { method: 'POST', idem: 'parcel', body: { ...v, from_city: station || v.from_city, trip_id: Number(v.trip_id), pieces: Number(v.pieces) } });
+      m.close();
+      if (labelPrinter.get().auto) printLabels(p.ref);
+      modal(html`<h2>Parcel ${p.ref}</h2><p style="margin:0">On bus <b class="mono">${p.plate}</b>, ${dayOf(p.depart_at.slice(0, 10))} ${time(p.depart_at)}. The sender got the tracking link by SMS. The receiver got it with a secret collection code.</p>
+        ${p.dev_collection_code ? html`<div class="notice small">Development mode (no real SMS): the receiver's collection code is <b class="mono">${p.dev_collection_code}</b></div>` : ''}
+        <div class="row" style="justify-content:flex-end"><button class="btn ghost" data-close>Done</button><button class="btn" id="pl">Print ${p.pieces} label${p.pieces > 1 ? 's' : ''}${labelPrinter.get().auto ? ' again' : ''}</button></div>`).el.querySelector('#pl').addEventListener('click', () => printLabels(p.ref));
+      reload();
+    }); });
   });
-  main.addEventListener('click', e => { const b = e.target.closest('[data-adv]'); if (b) busy(b, async () => { await api('/operator/parcels/' + b.dataset.adv, { method: 'PUT', body: { status: b.dataset.to } }); parcels(main); }); });
+
+  main.onclick = async e => {
+    const lab = e.target.closest('[data-label]'); if (lab) { printLabels(lab.dataset.label); toast('Printing labels…'); return; }
+    const h = e.target.closest('[data-hist]');
+    if (h) {
+      const ev = await api(`/operator/parcels/${h.dataset.hist}/history`);
+      modal(html`<div class="head"><h2>Parcel history</h2><button class="btn ghost sm" data-close>Close</button></div><div class="tablewrap"><table><tbody>${ev.map(x => html`<tr><td class="small">${x.created_at.slice(0, 16)}</td>
+        <td><b>${x.event.replace(/_/g, ' ')}</b>${x.note ? html`<div class="small muted">${x.note}</div>` : ''}</td><td class="small">${x.city || ''} ${x.plate ? html`<span class="mono">${x.plate}</span>` : ''}</td><td class="small">${x.by_name || 'system'}</td></tr>`)}</tbody></table></div>`, { wide: true });
+      return;
+    }
+    const c = e.target.closest('[data-collect]');
+    if (c) {
+      const m = modal(html`<h2>Hand over parcel</h2><p style="margin:0">Ask the receiver for the 6-digit collection code from their SMS and check their ID.</p><form id="cf" class="grid2">
+        <label class="field"><span>Collection code</span><input name="code" inputmode="numeric" maxlength="6" required autocomplete="off"></label><div></div>
+        <label class="field"><span>Name of person collecting</span><input name="name" required></label><label class="field"><span>Their ID number</span><input name="id_number" required></label>
+        <div class="row" style="justify-content:flex-end;grid-column:1/-1"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn">Hand over</button></div></form>`);
+      const f = $('#cf', m.el);
+      f.addEventListener('submit', ev => { ev.preventDefault(); busy(f.querySelector('.btn:not(.ghost)'), async () => { await api(`/operator/parcels/${c.dataset.collect}/collect`, { method: 'POST', body: formData(f) }); m.close(); toast('Handed over. The sender was told by SMS.'); reload(); }); });
+      return;
+    }
+    const mv = e.target.closest('[data-move]');
+    if (mv) {
+      const p = list.find(x => x.id === Number(mv.dataset.move));
+      const m = modal(html`<h2>Move ${p.ref} to another bus</h2><p style="margin:0">The tracking code stays the same. The receiver is told the new bus by SMS.</p><form id="mf" class="grid2">
+        <label class="field"><span>Date</span><input type="date" name="date" value="${today()}" min="${today()}"></label><label class="field"><span>Bus</span><select name="trip_id" required></select></label>
+        <div class="row" style="justify-content:flex-end;grid-column:1/-1"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn">Move</button></div></form>`);
+      const f = $('#mf', m.el);
+      const load = async () => { const trips = (await api('/operator/trips?date=' + f.date.value)).filter(t => ['scheduled', 'boarding', 'delayed'].includes(t.status) && t.id !== p.trip_id);
+        f.trip_id.innerHTML = trips.map(t => html`<option value="${t.id}">${t.depart_local} · ${t.plate} · ${t.route_name}</option>`).join(''); };
+      f.date.addEventListener('change', load); load();
+      f.addEventListener('submit', ev => { ev.preventDefault(); busy(f.querySelector('.btn:not(.ghost)'), async () => { const r = await api(`/operator/parcels/${p.id}/move`, { method: 'POST', body: { trip_id: Number(f.trip_id.value) } }); m.close(); toast(`Moved to bus ${r.plate}. Print new labels if the old ones show the wrong bus.`); reload(); }); });
+    }
+  };
+}
+
+/* ---------- live map of buses on the road ---------- */
+async function live(main) {
+  main.innerHTML = html`<div class="head"><h1>Live map</h1><span class="small muted" id="upd"></span></div>
+    <div id="lmap" class="map" style="height:480px"></div><div class="tablewrap"><table><thead><tr><th>Bus</th><th>Route</th><th>Status</th><th>Next stop</th><th class="r">Passengers</th><th class="r">Parcels</th><th>Position</th></tr></thead><tbody id="lrows"></tbody></table></div>`;
+  const L = window.L;
+  const map = L.map($('#lmap', main), { scrollWheelZoom: false }).setView([-14.5, 28.3], 6);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '© OpenStreetMap contributors' }).addTo(map);
+  const markers = new Map(), lines = new Map();
+  const draw = async () => {
+    const buses = await api('/operator/live');
+    $('#upd', main).textContent = `${buses.length} bus${buses.length === 1 ? '' : 'es'} on the road · updated ${time(new Date().toISOString())}`;
+    for (const b of buses) {
+      if (!lines.has(b.trip_id)) lines.set(b.trip_id, L.polyline(b.stops, { color: '#146b3a', weight: 3, opacity: .45 }).addTo(map));
+      const icon = L.divIcon({ className: '', html: `<div style="background:${b.status === 'delayed' ? '#b3261e' : '#b8611c'};color:#fff;border-radius:6px;padding:2px 6px;font:700 11px sans-serif;white-space:nowrap">${b.plate}</div>` });
+      if (markers.has(b.trip_id)) markers.get(b.trip_id).setLatLng([b.position.lat, b.position.lng]);
+      else markers.set(b.trip_id, L.marker([b.position.lat, b.position.lng], { icon }).addTo(map).bindTooltip(b.route));
+    }
+    $('#lrows', main).innerHTML = buses.length ? buses.map(b => html`<tr><td class="mono"><b>${b.plate}</b></td><td>${b.route}</td><td>${pill(b.status)}${b.delay_min ? html` <span class="small">+${b.delay_min} min</span>` : ''}</td>
+      <td>${b.next_stop ? html`${b.next_stop.city} <span class="small muted">${time(b.next_stop.eta)}</span>` : '—'}</td><td class="r num">${b.passengers}</td><td class="r num">${b.parcels}</td>
+      <td class="small">${b.source === 'gps' ? `GPS ${time(b.updated_at)}` : 'timetable estimate'}</td></tr>`).join('') : '<tr><td colspan="7" class="muted">No buses on the road right now.</td></tr>';
+  };
+  await draw();
+  const timer = setInterval(() => draw().catch(() => {}), 20000);
+  return () => { clearInterval(timer); map.remove(); };
 }
 
 /* ---------- reviews ---------- */
@@ -677,4 +790,4 @@ async function company(main) {
   }); });
 }
 
-const VIEWS = { cash, dashboard, trips, counter, fleet, staff: staffView, maintenance, routes, schedules, pricing, parcels, reviews, finance, company };
+const VIEWS = { live, cash, dashboard, trips, counter, fleet, staff: staffView, maintenance, routes, schedules, pricing, parcels, reviews, finance, company };
