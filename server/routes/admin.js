@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { tx, setting, verifyAudit } from '../db.js';
 import { requireRole, hashPassword } from '../auth.js';
 import { bad, notFound, conflict, forbidden, required, normPhone, money, localDate, addDays, isDate } from '../util.js';
-import { notifyContact, queue } from '../services/notify.js';
+import { notifyContact, queue, SECRET_KINDS_SQL } from '../services/notify.js';
 import { balance } from './operator.js';
 
 export default function adminRoutes(db) {
@@ -239,7 +239,7 @@ export default function adminRoutes(db) {
       JOIN buses b ON b.id = t.bus_id JOIN routes r ON r.id = t.route_id ORDER BY i.status = 'open' DESC, i.id DESC LIMIT 100`).all());
   });
   r.get('/admin/notifications', ...scope('full','support'), (_req, res) => {
-    res.json(db.prepare('SELECT id, channel, recipient, kind, status, attempts, last_error, created_at, sent_at, substr(body,1,140) body FROM notifications ORDER BY id DESC LIMIT 100').all());
+    res.json(db.prepare(`SELECT id, channel, recipient, kind, status, attempts, last_error, created_at, sent_at, CASE WHEN ${SECRET_KINDS_SQL} THEN '[one-time code hidden]' ELSE substr(body,1,140) END body FROM notifications ORDER BY id DESC LIMIT 100`).all());
   });
   r.get('/admin/promos', ...scope('full','finance'), (_req, res) => res.json(db.prepare("SELECT p.*, o.name operator FROM pricing_rules p LEFT JOIN operators o ON o.id = p.operator_id WHERE kind = 'promo' ORDER BY p.id DESC").all()));
   r.post('/admin/promos', ...scope('full'), (req, res) => {

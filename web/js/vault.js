@@ -47,14 +47,17 @@ export const vault = {
   async create(pin, ownerId) {
     const legacy = {};
     for (const n of ls.keys()) if (n === 'queue' || n === 'trips' || n.startsWith('manifest.')) legacy[n] = ls.get(n);
-    const sameOwner = ls.get('vault')?.owner === ownerId;
+    const prior = ls.get('vault');
+    // Plain data from an older app version (no vault yet) is always kept so unsynced scans are not lost;
+    // after a vault existed, only the same user's data carries over.
+    const keep = !prior || prior.owner === ownerId;
     wipe();
     const salt = crypto.getRandomValues(new Uint8Array(16));
     key = await derive(pin, salt);
     ls.set('vault', { salt: b64(salt), owner: ownerId, check: await seal({ ok: true }) });
     ls.set('fails', 0);
     mem = {};
-    if (sameOwner || !Object.keys(legacy).length) for (const [k, v] of Object.entries(legacy)) await this.setNow(k, v);
+    if (keep) for (const [k, v] of Object.entries(legacy)) await this.setNow(k, v);
   },
 
   async unlock(pin) {

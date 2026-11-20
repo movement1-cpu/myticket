@@ -16,12 +16,14 @@ import { t, langFor } from '../i18n.js';
 export const offerKey = id => sign('wl.' + id).slice(0, 16);
 export const offerUrl = id => `${config.baseUrl}/#/offer/${id}-${offerKey(id)}`;
 
-export function joinWaitlist(db, { tripId, fromStopId, toStopId, seats, name, phone, user, lang }) {
+export function joinWaitlist(db, { tripId, fromStopId, toStopId, seats, name, phone, user, lang, women = 0 }) {
   const trip = db.prepare("SELECT * FROM trips WHERE id = ? AND status IN ('scheduled','boarding','delayed')").get(tripId);
   if (!trip) throw notFound('This trip is not taking bookings.');
   seats = Number(seats);
   if (!Number.isInteger(seats) || seats < 1 || seats > 6) throw bad('Join the waitlist for 1 to 6 seats.');
   if (!String(name || '').trim()) throw bad('Enter your name.');
+  women = Number(women) || 0;
+  if (!Number.isInteger(women) || women < 0 || women > seats) throw bad('The number of women cannot be more than the seats needed.');
   const p = normPhone(phone);
   const st = id => db.prepare('SELECT * FROM route_stops WHERE id = ? AND route_id = ?').get(id, trip.route_id);
   const from = st(fromStopId), to = st(toStopId);
@@ -32,8 +34,8 @@ export function joinWaitlist(db, { tripId, fromStopId, toStopId, seats, name, ph
   const queued = db.prepare("SELECT COUNT(*) n FROM waitlist WHERE trip_id = ? AND status = 'waiting'").get(trip.id).n;
   if (free >= seats && !queued) throw conflict(`${free} seat${free === 1 ? ' is' : 's are'} free on this bus. Book them now instead of waiting.`, 'seats_available');
   const language = langFor(db, { lang, user, phone: p });
-  const row = db.prepare('INSERT INTO waitlist (trip_id, from_stop_id, to_stop_id, seats, contact_name, phone, lang, user_id) VALUES (?,?,?,?,?,?,?,?) RETURNING *')
-    .get(trip.id, from.id, to.id, seats, String(name).trim(), p, language, user?.role === 'passenger' ? user.id : null);
+  const row = db.prepare('INSERT INTO waitlist (trip_id, from_stop_id, to_stop_id, seats, contact_name, phone, lang, user_id, women) VALUES (?,?,?,?,?,?,?,?,?) RETURNING *')
+    .get(trip.id, from.id, to.id, seats, String(name).trim(), p, language, user?.role === 'passenger' ? user.id : null, women);
   const position = db.prepare("SELECT COUNT(*) n FROM waitlist WHERE trip_id = ? AND status = 'waiting' AND id <= ?").get(trip.id, row.id).n;
   notifyContact(db, { phone: p, kind: 'waitlist', body: t(language, 'sms.waitlist_joined', { n: position, seats }) });
   processWaitlist(db, trip.id); // seats may already be free
@@ -55,11 +57,11 @@ export function processWaitlist(db, tripId = null) {
       const made = tx(db, () => {
         db.prepare('DELETE FROM seat_holds WHERE trip_id = ? AND expires_at <= ?').run(trip_id, now);
         const free = seatMap(db, trip_id).decks.flatMap(d => d.rows.flat()).filter(s => s && s.status === 'available').map(s => s.no);
-        if (free.length < next.seats) return false;
-        // Prefer seats that are not women-only; use them only if needed.
+        // Prefer seats that are not women-only; women-only seats go only to as many women as are travelling.
         const layout = seatMap(db, trip_id).decks.flatMap(d => d.rows.flat()).filter(Boolean);
         const female = new Set(layout.filter(s => s.female).map(s => s.no));
-        const pick = [...free.filter(s => !female.has(s)), ...free.filter(s => female.has(s))].slice(0, next.seats);
+        const pick = [...free.filter(s => !female.has(s)), ...free.filter(s => female.has(s)).slice(0, next.women || 0)].slice(0, next.seats);
+        if (pick.length < next.seats) return false;
         const token = `wl-${next.id}-${crypto.randomUUID()}`;
         const expires = addMinutes(new Date(), minutes).toISOString();
         const ins = db.prepare('INSERT INTO seat_holds (trip_id, seat_no, hold_token, user_id, expires_at) VALUES (?,?,?,?,?)');

@@ -154,6 +154,7 @@ function waitlistFlow(trip) {
   const m = modal(html`<h2>${t('w.title')}</h2><p style="margin:0">${t('w.desc')}</p>
     <form id="wf" class="grid2">
       <label class="field"><span>${t('w.seats')}</span><select name="seats">${[1, 2, 3, 4, 5, 6].map(n => html`<option>${n}</option>`)}</select></label>
+      <label class="field"><span>${t('w.women')}</span><select name="women">${[0, 1, 2, 3, 4, 5, 6].map(n => html`<option>${n}</option>`)}</select></label>
       <label class="field"><span>${t('s.boarding')}</span><select name="from">${trip.boarding_points.map(s => html`<option value="${s.stop_id}">${time(s.time)} · ${s.terminal}</option>`)}</select></label>
       <label class="field"><span>${t('c.cname')}</span><input name="name" value="${u?.role === 'passenger' ? u.name : ''}" required></label>
       <label class="field"><span>${t('c.cphone')}</span><input name="phone" inputmode="tel" value="${u?.role === 'passenger' ? '0' + u.phone.slice(3) : ''}" required></label>
@@ -161,7 +162,7 @@ function waitlistFlow(trip) {
   const f = $('#wf', m.el);
   f.addEventListener('submit', e => { e.preventDefault(); busy(f.querySelector('.copper'), async () => {
     const v = formData(f);
-    const r = await api(`/trips/${trip.trip_id}/waitlist`, { method: 'POST', body: { seats: Number(v.seats), name: v.name, phone: v.phone, from_stop_id: Number(v.from), to_stop_id: trip.dropping_points.at(-1).stop_id, lang: getLang() } });
+    const r = await api(`/trips/${trip.trip_id}/waitlist`, { method: 'POST', body: { seats: Number(v.seats), women: Math.min(Number(v.women), Number(v.seats)), name: v.name, phone: v.phone, from_stop_id: Number(v.from), to_stop_id: trip.dropping_points.at(-1).stop_id, lang: getLang() } });
     m.close();
     toast(r.status === 'offered' ? t('w.offer') : t('w.done', { n: r.position }));
   }); });
@@ -199,7 +200,7 @@ export async function seats(app) {
     <div class="head"><div><a href="#/search?${c.search.key}" class="small">${t('s.back')}</a><h1>${t('s.title')}</h1></div>
       <div class="card" style="padding:8px 12px;gap:0"><span class="label">${t('s.held')}</span><span class="timer" id="timer">--:--</span></div></div>
     ${c.legs.map((l, i) => html`<section class="booking" data-leg="${i}">
-      <div class="card"><div class="head"><h2>${c.legs.length > 1 ? (i ? 'Return: ' : 'Outbound: ') : ''}${l.trip.boarding_points[0].city} → ${l.trip.dropping_points[0].city}</h2>
+      <div class="card"><div class="head"><h2>${c.legs.length > 1 ? (i ? 'Return: ' : 'Outbound: ') : ''}${l.trip.boarding_points[0].city} → ${l.trip.dropping_points.at(-1).city}</h2>
         <span class="muted">${day(l.trip.depart_at)} · ${l.trip.operator} · ${l.trip.class}</span></div><div id="map${i}"></div></div>
       <div class="card">
         <label class="field"><span>${t('s.boarding')}</span><select id="from${i}">${l.trip.boarding_points.map(s => html`<option value="${s.stop_id}" ${s.stop_id === l.from_stop_id ? 'selected' : ''}>${time(s.time)} · ${s.terminal}, ${s.city}</option>`)}</select></label>

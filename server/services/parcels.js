@@ -68,7 +68,7 @@ export function registerParcel(db, user, b) {
   logEvent(db, p, 'registered', { trip, city: b.from_city, user, note: `${pieces} piece${pieces > 1 ? 's' : ''}, ${weight} kg` });
   const when = `${localDate(trip.depart_at)} ${localTime(trip.depart_at)}`;
   notifyContact(db, { phone: p.sender_phone, kind: 'parcel', body: `MyTicket: Parcel ${code} registered on bus ${trip.plate} to ${p.to_city}, departing ${when}. Track it: ${trackUrl(code)}` });
-  notifyContact(db, { phone: p.receiver_phone, kind: 'parcel', body: `MyTicket: Parcel ${code} from ${p.sender_name} is coming to ${p.to_city} on bus ${trip.plate}. Track it: ${trackUrl(code)}. Your collection code is ${secret}. Give it only when you collect the parcel, with your ID.` });
+  notifyContact(db, { phone: p.receiver_phone, kind: 'parcel_code', body: `MyTicket: Parcel ${code} from ${p.sender_name} is coming to ${p.to_city} on bus ${trip.plate}. Track it: ${trackUrl(code)}. Your collection code is ${secret}. Give it only when you collect the parcel, with your ID.` });
   return { ...p, plate: trip.plate, depart_at: trip.depart_at, ...(config.isProd ? {} : { dev_collection_code: secret }) };
 }
 
@@ -98,7 +98,7 @@ export function scanParcel(db, user, tripId, text) {
     return { result: 'loaded', message: `Loaded: ${code} → ${p.to_city} (${p.pieces} piece${p.pieces > 1 ? 's' : ''}).`, parcel: view };
   }
   if (p.status === 'arrived') return { result: 'duplicate', message: `Parcel ${code} is already unloaded.`, parcel: view };
-  db.prepare("UPDATE parcels SET status = 'arrived', updated_at = datetime('now') WHERE id = ?").run(p.id);
+  db.prepare("UPDATE parcels SET status = 'arrived', last_alert = NULL, updated_at = datetime('now') WHERE id = ?").run(p.id);
   logEvent(db, p, p.status === 'missing' ? 'found' : 'unloaded', { trip, city: p.to_city, user });
   const o = db.prepare('SELECT name FROM operators WHERE id = ?').get(p.operator_id);
   notifyContact(db, { phone: p.receiver_phone, kind: 'parcel', body: `MyTicket: Parcel ${code} has arrived in ${p.to_city}. Collect it at the ${o.name} office with your ID and your collection code.` });
@@ -158,7 +158,8 @@ export function reassignParcel(db, user, parcel, tripId) {
 /** Loss prevention, run by the sweep: not unloaded 2 h after the bus arrived → missing; uncollected reminders. */
 export function parcelWatch(db) {
   const late = db.prepare(`SELECT p.*, b.plate FROM parcels p JOIN trips t ON t.id = p.trip_id JOIN buses b ON b.id = t.bus_id JOIN routes r ON r.id = t.route_id
-    WHERE p.status = 'in_transit' AND (t.status = 'arrived' OR datetime(t.depart_at, '+' || (r.duration_min + t.delay_min + ?) || ' minutes') < datetime('now'))`).all(NOT_UNLOADED_MIN);
+    WHERE p.status = 'in_transit' AND CASE WHEN t.arrived_at IS NOT NULL THEN datetime(t.arrived_at, '+' || ? || ' minutes') < datetime('now')
+      ELSE datetime(t.depart_at, '+' || (r.duration_min + t.delay_min + ?) || ' minutes') < datetime('now') END`).all(NOT_UNLOADED_MIN, NOT_UNLOADED_MIN);
   for (const p of late) {
     db.prepare("UPDATE parcels SET status = 'missing', last_alert = 'missing', updated_at = datetime('now') WHERE id = ?").run(p.id);
     logEvent(db, p, 'alert', { trip: { id: p.trip_id, plate: p.plate }, city: p.to_city, note: 'Not unloaded 2 hours after the bus arrived' });

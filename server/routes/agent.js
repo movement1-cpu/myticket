@@ -22,9 +22,13 @@ import { scanParcel, parcelsFollowTrip } from '../services/parcels.js';
 export default function agentRoutes(db) {
   const r = Router();
   const field = [requireRole('conductor', 'clerk', 'operator'), requireApprovedOperator];
+  // A clerk bound to a station only works on buses that stop in that town (boarding or unloading).
+  const stationOf = req => (req.user.role === 'clerk' && req.user.station_city) || null;
+  const STOPS_IN = `EXISTS (SELECT 1 FROM route_stops rs JOIN terminals te ON te.id = rs.terminal_id WHERE rs.route_id = t.route_id AND te.city = ?)`;
   const myTrip = (req) => {
-    const t = db.prepare('SELECT * FROM trips WHERE id = ? AND operator_id = ?').get(req.params.id, req.operatorId);
-    if (!t) throw notFound('Trip not found for your company.');
+    const st = stationOf(req);
+    const t = db.prepare(`SELECT * FROM trips t WHERE id = ? AND operator_id = ?${st ? ` AND ${STOPS_IN}` : ''}`).get(req.params.id, req.operatorId, ...(st ? [st] : []));
+    if (!t) throw notFound(st ? `Trip not found for the ${st} station.` : 'Trip not found for your company.');
     return t;
   };
 
@@ -36,7 +40,7 @@ export default function agentRoutes(db) {
         (SELECT COUNT(*) FROM booking_seats bs JOIN bookings bk ON bk.id = bs.booking_id WHERE bs.trip_id = t.id AND bs.active = 1 AND bk.status IN ('confirmed','completed')) booked,
         (SELECT COUNT(*) FROM booking_seats bs WHERE bs.trip_id = t.id AND bs.active = 1 AND bs.boarded_at IS NOT NULL) boarded
       FROM trips t JOIN routes r ON r.id = t.route_id JOIN buses b ON b.id = t.bus_id JOIN layouts l ON l.id = b.layout_id
-      WHERE t.operator_id = ? AND t.service_date = ? ORDER BY t.depart_at`).all(req.operatorId, date);
+      WHERE t.operator_id = ? AND t.service_date = ?${stationOf(req) ? ` AND ${STOPS_IN}` : ''} ORDER BY t.depart_at`).all(req.operatorId, date, ...(stationOf(req) ? [stationOf(req)] : []));
     res.json(rows.map(t => ({ ...t, depart_local: localTime(t.depart_at), mine: !!staff && t.conductor_id === staff.id })));
   });
 
@@ -112,7 +116,7 @@ export default function agentRoutes(db) {
     if (!allowed[t.status]?.includes(status)) throw conflict(`A ${t.status} trip cannot be marked ${status}.`);
     if (status === 'cancelled' && req.user.role !== 'operator') throw conflict('Only the bus company owner can cancel a trip.');
     if (status === 'delayed' && !delay) throw bad('Enter the delay in minutes.');
-    db.prepare('UPDATE trips SET status = ?, delay_min = CASE WHEN ? = \'delayed\' THEN ? ELSE delay_min END WHERE id = ?').run(status === 'delayed' && t.status === 'departed' ? 'departed' : status, status, delay, t.id);
+    db.prepare('UPDATE trips SET status = ?, delay_min = CASE WHEN ? = \'delayed\' THEN ? ELSE delay_min END, arrived_at = CASE WHEN ? = \'arrived\' THEN datetime(\'now\') ELSE arrived_at END WHERE id = ?').run(status === 'delayed' && t.status === 'departed' ? 'departed' : status, status, delay, status, t.id);
     const info = db.prepare(`SELECT b.plate, ft.name terminal, r.name route FROM trips t JOIN buses b ON b.id = t.bus_id JOIN routes r ON r.id = t.route_id
       JOIN route_stops fs ON fs.route_id = t.route_id AND fs.seq = 1 JOIN terminals ft ON ft.id = fs.terminal_id WHERE t.id = ?`).get(t.id);
     const bookings = db.prepare("SELECT * FROM bookings WHERE trip_id = ? AND status IN ('confirmed','reserved','pending_payment')").all(t.id);

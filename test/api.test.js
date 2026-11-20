@@ -1082,7 +1082,7 @@ test('parcels: plate-based code, SMS to both, wrong bus refused, follows the bus
   assert.equal(reg.status, 201, JSON.stringify(reg.body));
   const p = reg.body;
   assert.match(p.ref, new RegExp(`^${plate}-[A-Z2-9]{4}$`), 'tracking code starts with the bus number plate');
-  const sms = db.prepare("SELECT recipient, body FROM notifications WHERE kind = 'parcel' AND body LIKE ? AND channel = 'sms'").all(`%${p.ref}%`);
+  const sms = db.prepare("SELECT recipient, body FROM notifications WHERE kind IN ('parcel','parcel_code') AND body LIKE ? AND channel = 'sms'").all(`%${p.ref}%`);
   assert.ok(sms.some(n => n.recipient === '260977111222' && /Track it/.test(n.body)), 'sender gets the code and link');
   const toReceiver = sms.find(n => n.recipient === '260966333444');
   assert.match(toReceiver.body, new RegExp(`collection code is ${p.dev_collection_code}`), 'only the receiver gets the collection code');
@@ -1142,7 +1142,9 @@ test('parcels: left behind → owner alert and move to the next bus; not unloade
   assert.equal((await api('GET', `/api/parcels/track/${forgotten.ref}`)).body.plate, next.plate, 'same code, new bus');
   // The loaded one arrives but is never scanned off
   await api('POST', `/api/agent/trips/${t.trip_id}/status`, { token: tokens.operator, body: { status: 'arrived' } });
-  db.prepare("UPDATE trips SET depart_at = datetime('now', '-1 day') WHERE id = ?").run(t.trip_id);
+  parcelWatch(db);
+  assert.equal(db.prepare('SELECT status FROM parcels WHERE id = ?').get(loaded.id).status, 'in_transit', 'staff get 2 hours after arrival to scan it off');
+  db.prepare("UPDATE trips SET depart_at = datetime('now', '-1 day'), arrived_at = datetime('now', '-3 hours') WHERE id = ?").run(t.trip_id);
   parcelWatch(db);
   assert.equal(db.prepare('SELECT status FROM parcels WHERE id = ?').get(loaded.id).status, 'missing');
   assert.ok(db.prepare("SELECT 1 FROM notifications WHERE kind = 'parcel_alert' AND body LIKE ?").get(`%${loaded.ref} on bus%not scanned off%`));
@@ -1153,4 +1155,41 @@ test('live map lists the company buses on the road with position and next stop',
   assert.ok(Array.isArray(live));
   if (live.length) { assert.ok(live[0].position.lat && live[0].plate); }
   assert.equal((await api('GET', '/api/operator/live', { token: tokens.passenger })).status, 403);
+});
+
+/* ---------------- Review fixes ---------------- */
+test('approved payouts stay counted as withdrawn (no double payout)', async () => {
+  const before = (await api('GET', '/api/operator/finance', { token: tokens.operator })).body.balance.available;
+  const s = (await api('POST', '/api/operator/settlements', { token: tokens.operator, body: { amount: 100 } })).body;
+  assert.ok(s.id, JSON.stringify(s));
+  assert.equal((await api('POST', `/api/admin/settlements/${s.id}`, { token: tokens.admin, body: { status: 'approved' } })).status, 200);
+  const after = (await api('GET', '/api/operator/finance', { token: tokens.operator })).body.balance.available;
+  assert.equal(Math.round((before - after) * 100), 10000, 'still subtracted after approval');
+});
+
+test('admin outbox hides one-time codes; sent code messages are wiped', async () => {
+  const { dispatch } = await import('../server/services/notify.js');
+  await assert.equal((await api('POST', '/api/auth/otp', { body: { phone: '0971234567', purpose: 'reset' } })).status < 300, true);
+  const list = (await api('GET', '/api/admin/notifications', { token: tokens.admin })).body;
+  assert.ok(list.filter(n => n.kind.startsWith('otp_')).every(n => n.body === '[one-time code hidden]'));
+  await dispatch(db, { quiet: true });
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM notifications WHERE kind LIKE 'otp%' AND status = 'sent' AND body NOT LIKE '[contains%'").get().n, 0);
+});
+
+test('a station clerk only sees buses that stop at their station in the field app', async () => {
+  db.prepare("UPDATE staff SET station_city = 'Chipata' WHERE phone = '260960000003'").run();
+  try {
+    const trips = (await api('GET', `/api/agent/trips?date=${tomorrow()}`, { token: tokens.clerk })).body;
+    assert.deepEqual(trips, []);
+    const any = db.prepare("SELECT t.id FROM trips t JOIN users u ON u.operator_id = t.operator_id WHERE u.phone = '260960000003' LIMIT 1").get();
+    assert.equal((await api('GET', `/api/agent/trips/${any.id}/manifest`, { token: tokens.clerk })).status, 404);
+  } finally { db.prepare("UPDATE staff SET station_city = 'Lusaka' WHERE phone = '260960000003'").run(); }
+});
+
+test('a refused request does not burn its idempotency key', async () => {
+  const headers = { 'Idempotency-Key': 'test-key-refused-0001' };
+  const bad = await api('POST', '/api/bookings', { body: { legs: [] }, headers });
+  assert.ok(bad.status >= 400 && bad.status < 500);
+  const again = await api('POST', '/api/bookings', { body: { legs: [], contact: { name: 'X' } }, headers });
+  assert.notEqual(again.status, 422, 'new body with the same key is processed, not refused as a mismatch');
 });

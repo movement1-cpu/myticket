@@ -65,7 +65,7 @@ export default function publicRoutes(db) {
     const live = list => list.map(r => {
       const trip = db.prepare('SELECT tr.*, ro.distance_km FROM trips tr JOIN routes ro ON ro.id = tr.route_id WHERE tr.id = ?').get(r.trip_id);
       const st = id => db.prepare('SELECT * FROM route_stops WHERE id = ?').get(id);
-      const a = adultFare(db, trip, st(r.boarding_points[0].stop_id), st(r.dropping_points[0].stop_id));
+      const a = adultFare(db, trip, st(r.boarding_points[0].stop_id), st(r.dropping_points.at(-1).stop_id)); // same stops the cart books by default
       return { ...r, fare: a.fare, base_fare: a.base, demand_pct: a.demand, early_pct: a.early, peak_pct: a.peak };
     }).filter(r => (filters.min_price == null || r.fare >= Number(filters.min_price)) && (filters.max_price == null || r.fare <= Number(filters.max_price)));
     const outbound = live(searchTrips(db, { from, to, date, filters: { ...filters, min_price: null, max_price: null } })).sort(sorter);
@@ -101,7 +101,7 @@ export default function publicRoutes(db) {
   r.post('/trips/:id/waitlist', (req, res) => {
     required(req.body, ['seats', 'name', 'phone', 'from_stop_id', 'to_stop_id']);
     res.status(201).json(joinWaitlist(db, { tripId: Number(req.params.id), fromStopId: Number(req.body.from_stop_id), toStopId: Number(req.body.to_stop_id),
-      seats: req.body.seats, name: req.body.name, phone: req.body.phone, user: req.user, lang: req.body.lang }));
+      seats: req.body.seats, name: req.body.name, phone: req.body.phone, user: req.user, lang: req.body.lang, women: req.body.women }));
   });
   r.get('/waitlist/offer/:id', (req, res) => {
     const o = getOffer(db, Number(req.params.id), String(req.query.k || ''));
@@ -162,7 +162,7 @@ export default function publicRoutes(db) {
   });
   /** Sandbox hosted-card page posts the outcome here. Disabled when a real card gateway is configured. */
   r.post('/payments/sandbox-card', (req, res) => {
-    if (!providers.card.sandbox) throw notFound();
+    if (!providers.card.sandbox || !config.allowSandboxPayments) throw notFound();
     providers.card.complete(req.body.provider_ref, !!req.body.approve);
     res.json({ ok: true });
   });

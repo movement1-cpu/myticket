@@ -69,7 +69,7 @@ export function searchTrips(db, { from, to, date, filters = {} }) {
     if (departAt.getTime() < now) continue; // already left this city
     const arriveAt = addMinutes(t.depart_at, dropping[0].offset_min + t.delay_min);
     const { booked, held } = seatsTaken(db, id);
-    const fare = segmentFare(t, firstBoard, dropping[0]);
+    const fare = segmentFare(t, firstBoard, dropping.at(-1));
     const amenities = JSON.parse(t.amenities);
     out.push({
       trip_id: id, operator_id: t.operator_id, operator: t.operator_name, rating: ratings.get(t.operator_id) || null,

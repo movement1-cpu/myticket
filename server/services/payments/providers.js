@@ -13,6 +13,7 @@ const sandboxState = new Map(); // providerRef -> { status, at, msisdn, reason }
 export const sandbox = name => ({
   name, sandbox: true,
   async initiate({ msisdn, cardOutcome }) {
+    if (!config.allowSandboxPayments) throw Object.assign(new Error('unavailable'), { unavailable: true });
     const providerRef = `SBX-${name}-${crypto.randomUUID().slice(0, 8)}`;
     // Test numbers: ending 0000 = insufficient funds, ending 1111 = customer declined the prompt.
     const reason = msisdn?.endsWith('0000') ? 'Insufficient balance' : msisdn?.endsWith('1111') ? 'Customer declined the payment prompt' : cardOutcome === 'decline' ? 'Card declined by issuer' : null;
@@ -20,6 +21,7 @@ export const sandbox = name => ({
     return { providerRef, status: 'initiated', redirectUrl: name === 'card' ? `/pay-card.html?ref=${providerRef}` : undefined };
   },
   async check(providerRef) {
+    if (!config.allowSandboxPayments) return { status: 'failed', reason: 'Payment method not available' };
     const s = sandboxState.get(providerRef);
     if (!s) return { status: 'failed', reason: 'Unknown transaction' };
     if (s.forced) return s.forced;

@@ -56,6 +56,10 @@ const providers = {
   },
 };
 
+/** Messages that carry a secret (login/reset codes, parcel collection codes). Their text is wiped once delivered or given up. */
+export const SECRET_KINDS_SQL = "(kind LIKE 'otp\\_%' ESCAPE '\\' OR kind = 'parcel_code')";
+const REDACTED = '[contains a one-time code; removed after sending]';
+
 export async function dispatch(db, { quiet = false } = {}) {
   const batch = db.prepare("SELECT * FROM notifications WHERE status = 'queued' AND attempts < 5 ORDER BY id LIMIT 50").all();
   for (const n of batch) {
@@ -67,4 +71,5 @@ export async function dispatch(db, { quiet = false } = {}) {
       db.prepare("UPDATE notifications SET attempts=attempts+1, last_error=?, status=CASE WHEN attempts+1>=5 THEN 'failed' ELSE 'queued' END WHERE id=?").run(String(e.message), n.id);
     }
   }
+  db.prepare(`UPDATE notifications SET body = ? WHERE status IN ('sent','failed') AND ${SECRET_KINDS_SQL} AND body <> ?`).run(REDACTED, REDACTED);
 }

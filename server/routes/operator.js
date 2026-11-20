@@ -445,6 +445,8 @@ export default function operatorRoutes(db) {
     const q = req.params.ref.toUpperCase();
     const b = db.prepare('SELECT * FROM bookings WHERE (ref = ? OR group_ref = ?) AND operator_id = ?').get(q, q, req.operatorId);
     if (!b) throw notFound('No booking with that reference for your company.');
+    const st = stationOf(req);
+    if (st && !db.prepare(`SELECT 1 FROM trips t JOIN route_stops rs ON rs.route_id = t.route_id JOIN terminals te ON te.id = rs.terminal_id WHERE t.id = ? AND te.city = ?`).get(b.trip_id, st)) throw notFound(`No booking with that reference for the ${st} station.`);
     res.json({ group_ref: b.group_ref, bookings: groupBookings(db, b.group_ref).map(x => ticketData(db, x.ref)) });
   });
   r.post('/counter/settle/:group', ...desk, (req, res) => {
@@ -591,7 +593,7 @@ export function balance(db, operatorId) {
   const kept = db.prepare(`SELECT COALESCE(SUM(MAX(0, b.fare_total - b.discount - b.commission + b.luggage_fee
       - MIN(b.fare_total - b.discount + b.luggage_fee, COALESCE((SELECT SUM(r.amount) FROM refunds r WHERE r.booking_id = b.id), 0)))), 0) v
     FROM bookings b WHERE b.operator_id = ? AND b.status = 'cancelled' AND b.confirmed_at IS NOT NULL`).get(operatorId).v;
-  const withdrawn = db.prepare("SELECT COALESCE(SUM(amount), 0) v FROM settlements WHERE operator_id = ? AND status IN ('requested','paid')").get(operatorId).v;
+  const withdrawn = db.prepare("SELECT COALESCE(SUM(amount), 0) v FROM settlements WHERE operator_id = ? AND status IN ('requested','approved','paid')").get(operatorId).v;
   const earned = sum('completed') + kept;
   return { earned: money(earned), pending: money(sum('confirmed')), withdrawn: money(withdrawn), available: money(earned - withdrawn) };
 }

@@ -54,9 +54,10 @@ export async function api(path, { method = 'GET', body, headers = {}, idem = nul
     headers: { 'X-MT-CSRF': '1', ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers },
     body: body ? JSON.stringify(body) : undefined,
   });
-  if (idem && res.status !== 409) idemDone(idem); // answered (409 = still processing: keep the key and try again)
   const ct = res.headers.get('content-type') || '';
   const data = ct.includes('json') ? await res.json() : await res.blob();
+  // Answered: forget the key. Only "still processing" keeps it, so the next tap waits for the same request.
+  if (idem && data?.code !== 'in_progress') idemDone(idem);
   if (res.status === 401 && auth.user && !path.startsWith('/auth/') && path !== '/me' && !location.pathname.startsWith('/agent')) {
     if (data?.code === 'mfa_required') location.hash = '#/login';
     else { auth.clear(); sessionStorage.setItem('mt.next', location.hash); location.hash = '#/login'; }

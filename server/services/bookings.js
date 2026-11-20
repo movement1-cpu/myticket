@@ -162,6 +162,7 @@ export async function startPayment(db, { group_ref, method, msisdn, cardOutcome 
   // Give the customer time to approve the prompt: extend the hold a little while a payment is in flight.
   db.prepare("UPDATE bookings SET expires_at = MAX(expires_at, ?) WHERE group_ref = ? AND status = 'pending_payment'").run(addMinutes(new Date(), 5).toISOString(), group_ref);
   const p = providers[method];
+  if (p.sandbox && !config.allowSandboxPayments) throw bad(`${({ mtn: 'MTN MoMo', airtel: 'Airtel Money', zamtel: 'Zamtel Kwacha', card: 'Card' })[method]} payments are not available yet. Choose another method or pay at the station.`, 'method_unavailable');
   const r = await p.initiate({ amount, currency: config.currency, msisdn: num, reference: group_ref, cardOutcome });
   const row = db.prepare(`INSERT INTO payments (group_ref, provider, msisdn, amount, status, provider_ref, failure_reason) VALUES (?,?,?,?,?,?,?) RETURNING id`)
     .get(group_ref, method, num, amount, r.status, r.providerRef, r.reason ?? null);

@@ -114,6 +114,7 @@ const D = {
     'Ingileni pa lisitu. Nga ifipuna fyakakuka, tukamusungila no kumutumina SMS ne link ya kulipila.',
     'Lowani pa mndandanda. Mipando ikapezeka, tidzakusungirani ndi kutumiza SMS ndi link yolipirira.',
     'Amunjile mumulongo. Zyuuno kuti zyajanika, tuyoomubambila akumutumina SMS a link yakulipa.'],
+  'w.women': ['How many are women? (for women-only seats)', 'Banamayo bangahi? (ku fipuna fya banamayo)', 'Akazi angati? (mipando ya akazi okha)', 'Bamakaintu bongaye? (zyuuno zyabamakaintu)'],
   'w.seats': ['Seats needed', 'Ifipuna mulefwaya', 'Mipando yofunika', 'Zyuuno nzyomuyanda'],
   'w.done': ['You are number {n} in line. We will SMS you when seats free up.', 'Muli nambala {n}. Tukamutumina SMS ilyo ifipuna fyakakuka.',
     'Ndinu nambala {n}. Tidzakutumizirani SMS mipando ikapezeka.', 'Muli namba {n}. Tuyoomutumina SMS zyuuno zyaakujanika.'],

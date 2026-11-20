@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
 import { authenticate, requireRole } from './auth.js';
 import { idempotent } from './security.js';
-import { HttpError, notFound } from './util.js';
+import { HttpError, notFound, safeEqual } from './util.js';
 import publicRoutes from './routes/public.js';
 import accountRoutes from './routes/account.js';
 import operatorRoutes from './routes/operator.js';
@@ -19,7 +19,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export function createApp(db) {
   const app = express();
   app.disable('x-powered-by');
-  app.set('trust proxy', 1);
+  app.set('trust proxy', config.trustProxy); // never trust X-Forwarded-For unless a known proxy sets it
 
   app.use((req, res, next) => {
     res.set({
@@ -60,7 +60,8 @@ export function createApp(db) {
    * set USSD_SECRET and register the callback URL with ?key=<secret>.
    */
   const gatewayKey = (req) => {
-    if (config.ussdSecret && req.query.key !== config.ussdSecret) throw new HttpError(403, 'Bad gateway key.');
+    if (!config.ussdSecret) { if (config.isProd) throw notFound('Unknown API endpoint.'); return; } // closed in production until USSD_SECRET is set
+    if (!safeEqual(String(req.query.key || ''), config.ussdSecret)) throw new HttpError(403, 'Bad gateway key.');
   };
   api.post('/ussd', async (req, res) => {
     gatewayKey(req);

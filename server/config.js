@@ -20,6 +20,10 @@ export const config = {
   secret: env.APP_SECRET || crypto.createHash('sha256').update('dev-only-secret').digest('hex'),
   currency: env.CURRENCY || 'ZMW',
   ussdSecret: env.USSD_SECRET || null,
+  // Test payment providers auto-approve payments. Never in production unless explicitly allowed (staging only).
+  allowSandboxPayments: !isProd || env.ALLOW_SANDBOX_PAYMENTS === '1',
+  // How many reverse proxies sit in front of the app (Caddy in docker-compose = 1). 0 = connect directly, ignore X-Forwarded-For.
+  trustProxy: Number(env.TRUST_PROXY ?? 0),
   ussdCode: env.USSD_CODE || '*384*123#',
   timezoneOffset: env.TZ_OFFSET || '+02:00', // Africa/Lusaka, no DST
   // Payment providers run in sandbox until their credentials are present.

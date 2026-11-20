@@ -96,7 +96,7 @@ npm test
 - Dial the USSD code (set `USSD_CODE`, e.g. `*384*123#`) on any phone to book. The menu goes: town → destination → today, tomorrow or the day after → bus → number of seats (up to 4) → name and NRC for each passenger → confirm. Seats are assigned automatically, and payment is a mobile money prompt on the same number (MTN, Airtel or Zamtel, detected from the number). Towns are listed busiest first, with paging.
 - The same menu has: my upcoming tickets, bus status by booking reference (only for the number that booked), and language.
 - SMS commands to your inbound number: `STATUS MT4K9P2Q`, `TICKETS`, `HELP`.
-- Gateway callbacks follow the Africa's Talking format: `POST /api/ussd` and `POST /api/sms/inbound`. In production set `USSD_SECRET` and register the URLs with `?key=<secret>`.
+- Gateway callbacks follow the Africa's Talking format: `POST /api/ussd` and `POST /api/sms/inbound`. In production these endpoints stay closed until `USSD_SECRET` is set; register the URLs with `?key=<secret>`.
 - Development simulator at `/ussd.html` (disabled in production).
 
 **Loyalty points**
@@ -167,7 +167,7 @@ Unpaid bookings expire, and their seats are released by a sweep that runs every 
 
 ## Going to production
 
-These parts run in **sandbox** until you configure them. The app says so in the UI and API responses (`sandbox: true`).
+These parts run in **sandbox** until you configure them. The app says so in the UI and API responses (`sandbox: true`). With `NODE_ENV=production`, sandbox payment methods are refused (no free tickets) unless `ALLOW_SANDBOX_PAYMENTS=1` is set for a staging site.
 
 | Area | Status | To go live |
 |---|---|---|

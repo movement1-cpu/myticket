@@ -124,7 +124,7 @@ export function protectStoredIds(db) {
 /**
  * If the client sends "Idempotency-Key: <random>", the first response is stored for 24 hours and replayed for any repeat
  * with the same key (and the same body). A repeat that arrives while the first is still running gets 409.
- * Server errors (5xx) are not stored, so the client can safely retry.
+ * Only successful (2xx) responses are stored; errors are forgotten, so the client can fix the cause and retry.
  */
 export function idempotent(db) {
   return (req, res, next) => {
@@ -144,7 +144,8 @@ export function idempotent(db) {
     db.prepare('INSERT INTO idempotency_keys (key, scope, endpoint, body_hash) VALUES (?,?,?,?)').run(key, scope, endpoint, bodyHash);
     const json = res.json.bind(res);
     res.json = body => {
-      if (res.statusCode < 500) db.prepare('UPDATE idempotency_keys SET status = ?, response = ? WHERE key = ? AND scope = ? AND endpoint = ?').run(res.statusCode, JSON.stringify(body), key, scope, endpoint);
+      // Only successes are replayed. A refusal (4xx) changed nothing, so the client may fix the cause and retry with the same key.
+      if (res.statusCode < 300) db.prepare('UPDATE idempotency_keys SET status = ?, response = ? WHERE key = ? AND scope = ? AND endpoint = ?').run(res.statusCode, JSON.stringify(body), key, scope, endpoint);
       else db.prepare('DELETE FROM idempotency_keys WHERE key = ? AND scope = ? AND endpoint = ?').run(key, scope, endpoint);
       return json(body);
     };

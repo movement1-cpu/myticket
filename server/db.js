@@ -518,6 +518,8 @@ function migrate(db) {
   add('bookings', 'points_discount', 'REAL NOT NULL DEFAULT 0');
   add('bookings', 'lang', "TEXT NOT NULL DEFAULT 'en'");
   add('bookings', 'source', 'TEXT'); // 'ussd' for basic-phone bookings
+  add('waitlist', 'women', 'INTEGER NOT NULL DEFAULT 0'); // how many travellers may take women-only seats
+  add('trips', 'arrived_at', 'TEXT'); // when the conductor marked the bus arrived (parcel unload grace period starts here)
   add('users', 'lang', "TEXT NOT NULL DEFAULT 'en'");
   add('buses', 'odometer_km', 'REAL NOT NULL DEFAULT 0');
   add('buses', 'service_interval_km', 'INTEGER NOT NULL DEFAULT 10000');
